@@ -4,8 +4,26 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #define CLOSE_SOCKET closesocket
 typedef int socklen_t;
+
+namespace {
+
+    struct WinsockInitializer {
+        WinsockInitializer() {
+            WSADATA data;
+            WSAStartup(MAKEWORD(2, 2), &data);
+        }
+
+        ~WinsockInitializer() {
+            WSACleanup();
+        }
+    };
+
+    WinsockInitializer gWinsockInitializer;
+
+}
 #else
 
 #include <poll.h>
@@ -35,6 +53,11 @@ namespace RakNet {
 
         int reuse = 1;
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *) &reuse, sizeof(reuse));
+
+        if (socketFamily == AF_INET6) {
+            int v6Only = 0;
+            setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (const char *) &v6Only, sizeof(v6Only));
+        }
 
         int bufferSize = 1024 * 1024;
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char *) &bufferSize, sizeof(bufferSize));
