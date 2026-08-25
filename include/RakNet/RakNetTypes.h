@@ -1,7 +1,7 @@
 #pragma once
 
-#include "raknet/RakNetDefines.h"
-#include "raknet/GetTime.h"
+#include "RakNet/RakNetDefines.h"
+#include "RakNet/GetTime.h"
 
 #include <cstdint>
 #include <cstring>

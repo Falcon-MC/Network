@@ -1,5 +1,5 @@
-#include "raknet/ReliabilityLayer.h"
-#include "raknet/MessageIdentifiers.h"
+#include "RakNet/ReliabilityLayer.h"
+#include "RakNet/MessageIdentifiers.h"
 
 #include <algorithm>
 

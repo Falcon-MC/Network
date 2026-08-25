@@ -1,5 +1,5 @@
-#include "raknet/RakPeer.h"
-#include "raknet/MessageIdentifiers.h"
+#include "RakNet/RakPeer.h"
+#include "RakNet/MessageIdentifiers.h"
 
 #include <chrono>
 

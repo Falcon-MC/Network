@@ -1,5 +1,5 @@
-#include "raknet/RakNetTypes.h"
-#include "raknet/BitStream.h"
+#include "RakNet/RakNetTypes.h"
+#include "RakNet/BitStream.h"
 
 #include <cstdio>
 
