@@ -1,8 +1,8 @@
 #pragma once
 
-#include "RakNet/RakNetSocket2.h"
-#include "RakNet/RakPeerInterface.h"
-#include "RakNet/ReliabilityLayer.h"
+#include "raknet/RakNetSocket2.h"
+#include "raknet/RakPeerInterface.h"
+#include "raknet/ReliabilityLayer.h"
 
 #include <atomic>
 #include <deque>

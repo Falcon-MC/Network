@@ -1,7 +1,7 @@
 #pragma once
 
-#include "RakNet/PacketPriority.h"
-#include "RakNet/RakNetTypes.h"
+#include "raknet/PacketPriority.h"
+#include "raknet/RakNetTypes.h"
 
 #include <string>
 

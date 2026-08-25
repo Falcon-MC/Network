@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RakNet/RakNetTypes.h"
+#include "raknet/RakNetTypes.h"
 
 namespace RakNet {
 

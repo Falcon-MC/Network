@@ -1,8 +1,8 @@
 #pragma once
 
-#include "RakNet/PacketPriority.h"
-#include "RakNet/RakNetDefines.h"
-#include "RakNet/RakNetTypes.h"
+#include "raknet/PacketPriority.h"
+#include "raknet/RakNetDefines.h"
+#include "raknet/RakNetTypes.h"
 
 #include <vector>
 

@@ -1,4 +1,4 @@
-#include "RakNet/BitStream.h"
+#include "raknet/BitStream.h"
 
 namespace RakNet {
 

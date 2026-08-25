@@ -1,8 +1,8 @@
 #pragma once
 
-#include "RakNet/BitStream.h"
-#include "RakNet/InternalPacket.h"
-#include "RakNet/RakNetSocket2.h"
+#include "raknet/BitStream.h"
+#include "raknet/InternalPacket.h"
+#include "raknet/RakNetSocket2.h"
 
 #include <deque>
 #include <map>

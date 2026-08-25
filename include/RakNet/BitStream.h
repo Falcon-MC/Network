@@ -1,7 +1,7 @@
 #pragma once
 
-#include "RakNet/RakNetDefines.h"
-#include "RakNet/RakNetTypes.h"
+#include "raknet/RakNetDefines.h"
+#include "raknet/RakNetTypes.h"
 
 #include <cstring>
 #include <string>
