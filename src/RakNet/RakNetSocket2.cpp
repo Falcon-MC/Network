@@ -5,7 +5,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#define CLOSE_SOCKET closesocket
+#define CLOSE_SOCKET ::closesocket
 typedef int socklen_t;
 
 namespace {
@@ -29,7 +29,7 @@ namespace {
 #include <poll.h>
 #include <unistd.h>
 
-#define CLOSE_SOCKET close
+#define CLOSE_SOCKET ::close
 #endif
 
 namespace RakNet {
