@@ -10,7 +10,8 @@ if (NOT TARGET FalconProtocol)
     FetchContent_Declare(
         falcon_protocol
         GIT_REPOSITORY https://github.com/Falcon-MC/Protocol.git
-        GIT_TAG 0a0426fab3f074f34fc448e7727fa0a3aa21be27
+        GIT_TAG main
+        GIT_SHALLOW TRUE
         GIT_PROGRESS TRUE
     )
     FetchContent_MakeAvailable(falcon_protocol)
