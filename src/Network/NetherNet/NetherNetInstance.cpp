@@ -81,6 +81,11 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
                 return _negotiate(networkID, offer, answer, errorCode);
             };
 
+    mSignaling.setStatusProvider([this]() {
+        const nethernet::ServerData data = mServerDataProvider ? mServerDataProvider() : nethernet::ServerData();
+        return data.toStatusJson();
+    });
+
     if (!mSignaling.start(definition.mIPv4Address, definition.mPort, handler))
         return false;
 

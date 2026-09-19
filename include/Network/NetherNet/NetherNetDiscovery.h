@@ -26,6 +26,8 @@ namespace nethernet {
         std::string mNonce;
 
         std::string encode() const;
+
+        std::string toStatusJson() const;
     };
 
     class DiscoveryCrypto {

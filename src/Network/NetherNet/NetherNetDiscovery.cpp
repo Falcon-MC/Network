@@ -14,6 +14,7 @@
 #endif
 
 #include "Core/Debug/BedrockLog.h"
+#include "Core/Json/Json.h"
 #include "Core/Utility/BinaryStream.h"
 #include "Core/Utility/ReadOnlyBinaryStream.h"
 #include "Network/NetherNet/NetherNetSignal.h"
@@ -163,6 +164,25 @@ namespace nethernet {
              reinterpret_cast<const unsigned char *>(payload.data()), payload.size(), digest, &length);
 
         return std::string(reinterpret_cast<const char *>(digest), length);
+    }
+
+    std::string ServerData::toStatusJson() const {
+        std::string json = "{\"name\":\"";
+        json += json::escape(mServerName);
+        json += "\",\"protocol\":";
+        json += std::to_string(mProtocol);
+        json += ",\"version\":\"";
+        json += json::escape(mGameVersion);
+        json += "\",\"level\":\"";
+        json += json::escape(mLevelName);
+        json += "\",\"players\":";
+        json += std::to_string(mPlayerCount);
+        json += ",\"maxPlayers\":";
+        json += std::to_string(mMaxPlayerCount);
+        json += ",\"gameType\":";
+        json += std::to_string(mGameType);
+        json += "}";
+        return json;
     }
 
     std::string ServerData::encode() const {

@@ -80,6 +80,15 @@ namespace nethernet {
             writeAll(descriptor, response);
         }
 
+        void writeJson(const Stream &descriptor, const std::string &json) {
+            std::string response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: application/json\r\n";
+            response += "Content-Length: " + std::to_string(json.size()) + "\r\n";
+            response += "Connection: close\r\n\r\n";
+            response += json;
+            writeAll(descriptor, response);
+        }
+
         void writeSdp(const Stream &descriptor, const std::string &answer) {
             std::string response = "HTTP/1.1 200 OK\r\n";
             response += "Content-Type: application/sdp\r\n";
@@ -331,7 +340,10 @@ namespace nethernet {
             path = path.substr(0, query);
 
         if (method == "GET" && path == "/v1/join") {
-            writeText(descriptor, 200, "OK", std::string());
+            if (mStatusProvider)
+                writeJson(descriptor, mStatusProvider());
+            else
+                writeText(descriptor, 200, "OK", std::string());
             return;
         }
 
