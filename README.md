@@ -66,4 +66,8 @@ cmake --build build
 
 ## Licensing information
 
+Falcon Network is licensed under the [GNU Lesser General Public License v3.0](LICENSE), which supplements
+the [GNU General Public License v3.0](COPYING). It can be linked from projects under any license, as long as
+changes to this library itself stay under the same license.
+
 Falcon is not affiliated with Mojang. All brands and trademarks belong to their respective owners.
