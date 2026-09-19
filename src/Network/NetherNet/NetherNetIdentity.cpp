@@ -22,6 +22,33 @@ namespace nethernet {
         const char *BASE64_URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         const size_t ES384_COORDINATE_SIZE = 48;
         const long long TOKEN_LIFETIME_SECONDS = 60;
+        const unsigned char P384_PUBLIC_KEY_PREFIX[] = {
+                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+                0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00, 0x04
+        };
+
+        std::string publicKeyFromJsonWebKey(const json::Value &key) {
+            const json::Value *type = key.get("kty");
+            const json::Value *curve = key.get("crv");
+            const json::Value *x = key.get("x");
+            const json::Value *y = key.get("y");
+            if (type == nullptr || curve == nullptr || x == nullptr || y == nullptr || !type->isString() ||
+                !curve->isString() || !x->isString() || !y->isString())
+                return std::string();
+
+            if (type->mString != "EC" || curve->mString != "P-384")
+                return std::string();
+
+            const std::string xBytes = ConnectionRequest::decodeBase64Url(x->mString);
+            const std::string yBytes = ConnectionRequest::decodeBase64Url(y->mString);
+            if (xBytes.size() != ES384_COORDINATE_SIZE || yBytes.size() != ES384_COORDINATE_SIZE)
+                return std::string();
+
+            std::string der((const char *) P384_PUBLIC_KEY_PREFIX, sizeof(P384_PUBLIC_KEY_PREFIX));
+            der += xBytes;
+            der += yBytes;
+            return der;
+        }
 
         std::string encode(const std::string &data, const char *alphabet, bool padding) {
             std::string out;
@@ -324,8 +351,8 @@ namespace nethernet {
             return nullptr;
         }
 
-        if (!cpk->isString()) {
-            failure = "cpk claim is not a base64 encoded PKIX public key";
+        if (!cpk->isString() && !cpk->isObject()) {
+            failure = "cpk claim is neither a base64 encoded PKIX public key nor a JSON web key";
             return nullptr;
         }
 
@@ -338,7 +365,8 @@ namespace nethernet {
             }
         }
 
-        const std::string der = ConnectionRequest::decodeBase64Url(cpk->mString);
+        const std::string der = cpk->isObject() ? publicKeyFromJsonWebKey(*cpk)
+                                                : ConnectionRequest::decodeBase64Url(cpk->mString);
         if (der.empty()) {
             failure = "cpk claim could not be decoded";
             return nullptr;
