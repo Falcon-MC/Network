@@ -312,6 +312,19 @@ namespace RakNet {
         if (!systemAddress.FromString(host, remotePort))
             return false;
 
+        if (systemAddress.GetIPVersion() == 4) {
+            const uint32_t rawAddress = systemAddress.addr4.sin_addr.s_addr;
+
+            memset(&systemAddress.addr6, 0, sizeof(systemAddress.addr6));
+            systemAddress.addr6.sin6_family = AF_INET6;
+            systemAddress.addr6.sin6_port = htons(remotePort);
+
+            unsigned char *bytes = (unsigned char *) &systemAddress.addr6.sin6_addr;
+            bytes[10] = 0xff;
+            bytes[11] = 0xff;
+            memcpy(bytes + 12, &rawAddress, sizeof(rawAddress));
+        }
+
         {
             std::lock_guard<std::mutex> guard(remoteSystemMutex);
             if (GetRemoteSystemFromSystemAddress(systemAddress) != nullptr)
