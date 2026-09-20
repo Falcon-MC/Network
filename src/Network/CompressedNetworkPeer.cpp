@@ -89,8 +89,11 @@ void CompressedNetworkPeer::sendPacket(const std::string &data, Reliability reli
     if (data.empty())
         return;
 
+    const bool gamePacketId = mPeer->usesGamePacketId();
+
     std::string payload;
-    payload.push_back((char) GAME_PACKET_ID);
+    if (gamePacketId)
+        payload.push_back((char) GAME_PACKET_ID);
 
     if (!mCompressionEnabled) {
         payload.append(data);
@@ -121,11 +124,16 @@ NetworkPeer::DataStatus CompressedNetworkPeer::receivePacket(std::string &outDat
         if (mPeer->receivePacket(payload) == DataStatus::NoData)
             return DataStatus::NoData;
 
-        if (payload.size() < 2 || (unsigned char) payload[0] != GAME_PACKET_ID)
+        const bool gamePacketId = mPeer->usesGamePacketId();
+
+        if (gamePacketId && (payload.size() < 2 || (unsigned char) payload[0] != GAME_PACKET_ID))
             continue;
 
-        const char *body = payload.data() + 1;
-        size_t bodyLength = payload.size() - 1;
+        if (!gamePacketId && payload.empty())
+            continue;
+
+        const char *body = payload.data() + (gamePacketId ? 1 : 0);
+        size_t bodyLength = payload.size() - (gamePacketId ? 1 : 0);
 
         if (!mCompressionEnabled) {
             outData.assign(body, bodyLength);

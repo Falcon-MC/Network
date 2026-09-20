@@ -38,4 +38,6 @@ public:
     virtual void update() {}
 
     virtual void flush() {}
+
+    virtual bool usesGamePacketId() const { return true; }
 };

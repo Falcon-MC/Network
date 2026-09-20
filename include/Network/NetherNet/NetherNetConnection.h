@@ -33,6 +33,8 @@ namespace nethernet {
 
         NetworkStatus getNetworkStatus() const override;
 
+        bool usesGamePacketId() const override { return false; }
+
         const NetworkIdentifier &getNetworkIdentifier() const { return mId; }
 
         bool attachChannel(const std::shared_ptr<rtc::DataChannel> &channel);
