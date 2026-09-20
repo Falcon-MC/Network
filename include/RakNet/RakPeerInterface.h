@@ -14,6 +14,9 @@ namespace RakNet {
         virtual StartupResult Startup(unsigned int maxConnections, SocketDescriptor *socketDescriptors,
                                       unsigned int socketDescriptorCount) = 0;
 
+        virtual bool Connect(const char *host, unsigned short remotePort, unsigned int attempts = 12,
+                             unsigned int retryIntervalMs = 500) = 0;
+
         virtual void Shutdown(unsigned int blockDuration) = 0;
 
         virtual bool IsActive() const = 0;

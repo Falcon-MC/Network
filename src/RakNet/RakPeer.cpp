@@ -8,6 +8,9 @@
 
 namespace RakNet {
 
+    static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_MTU_SIZE, 1200, 576};
+    static const size_t CONNECTION_MTU_SIZE_COUNT = sizeof(CONNECTION_MTU_SIZES) / sizeof(CONNECTION_MTU_SIZES[0]);
+
     static uint64_t GenerateGUID() {
         std::random_device randomDevice;
         std::mt19937_64 generator(((uint64_t) randomDevice() << 32) ^ GetTimeUS());
@@ -300,6 +303,110 @@ namespace RakNet {
         socket.Send((const char *) bitStream.GetData(), (int) bitStream.GetNumberOfBytesUsed(), systemAddress);
     }
 
+    bool RakPeer::Connect(const char *host, unsigned short remotePort, unsigned int attempts,
+                          unsigned int retryIntervalMs) {
+        if (endThreads || host == nullptr || attempts == 0)
+            return false;
+
+        SystemAddress systemAddress;
+        if (!systemAddress.FromString(host, remotePort))
+            return false;
+
+        {
+            std::lock_guard<std::mutex> guard(remoteSystemMutex);
+            if (GetRemoteSystemFromSystemAddress(systemAddress) != nullptr)
+                return false;
+        }
+
+        ConnectionAttempt attempt;
+        attempt.systemAddress = systemAddress;
+        attempt.attemptsLeft = attempts;
+        attempt.retryInterval = retryIntervalMs;
+        attempt.nextSendTime = GetTimeMS();
+        attempt.mtuIndex = 0;
+
+        std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+        for (const ConnectionAttempt &existing: connectionAttempts) {
+            if (existing.systemAddress == systemAddress)
+                return false;
+        }
+
+        connectionAttempts.push_back(attempt);
+        return true;
+    }
+
+    void RakPeer::SendOpenConnectionRequest1(const ConnectionAttempt &attempt) {
+        const int mtuSize = CONNECTION_MTU_SIZES[attempt.mtuIndex];
+
+        BitStream out;
+        out.Write((unsigned char) ID_OPEN_CONNECTION_REQUEST_1);
+        out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
+        out.Write((unsigned char) RAKNET_PROTOCOL_VERSION);
+
+        const int padding = mtuSize - UDP_HEADER_SIZE - (int) out.GetNumberOfBytesUsed();
+        for (int index = 0; index < padding; index++)
+            out.Write((unsigned char) 0);
+
+        SendOfflineMessage(out, attempt.systemAddress);
+    }
+
+    void RakPeer::SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize) {
+        BitStream out;
+        out.Write((unsigned char) ID_OPEN_CONNECTION_REQUEST_2);
+        out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
+        out.Write(systemAddress);
+        out.Write(mtuSize);
+        out.Write(myGuid.g);
+
+        SendOfflineMessage(out, systemAddress);
+    }
+
+    void RakPeer::FailConnectionAttempt(const SystemAddress &systemAddress, unsigned char reason) {
+        {
+            std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+            for (auto it = connectionAttempts.begin(); it != connectionAttempts.end(); ++it) {
+                if (it->systemAddress == systemAddress) {
+                    connectionAttempts.erase(it);
+                    break;
+                }
+            }
+        }
+
+        Packet *packet = AllocPacket(1, systemAddress, UNASSIGNED_RAKNET_GUID);
+        packet->data[0] = reason;
+        PushBackPacket(packet);
+    }
+
+    void RakPeer::UpdateConnectionAttempts(TimeMS time) {
+        std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+
+        for (auto it = connectionAttempts.begin(); it != connectionAttempts.end();) {
+            if (time < it->nextSendTime) {
+                ++it;
+                continue;
+            }
+
+            if (it->attemptsLeft == 0) {
+                const SystemAddress systemAddress = it->systemAddress;
+                it = connectionAttempts.erase(it);
+
+                Packet *packet = AllocPacket(1, systemAddress, UNASSIGNED_RAKNET_GUID);
+                packet->data[0] = ID_CONNECTION_ATTEMPT_FAILED;
+                PushBackPacket(packet);
+                continue;
+            }
+
+            SendOpenConnectionRequest1(*it);
+
+            it->attemptsLeft--;
+            it->nextSendTime = time + it->retryInterval;
+            if (it->mtuIndex + 1 < CONNECTION_MTU_SIZE_COUNT)
+                it->mtuIndex++;
+
+            ++it;
+        }
+    }
+
     RakPeer::RemoteSystemStruct *RakPeer::AssignSystemAddressToRemoteSystemList(const SystemAddress &systemAddress,
                                                                                int mtuSize, TimeMS time) {
         if (remoteSystemList.size() >= maximumNumberOfPeers)
@@ -461,6 +568,112 @@ namespace RakNet {
                 return true;
             }
 
+            case ID_OPEN_CONNECTION_REPLY_1: {
+                if (!IsOfflineMessageMagic(data, length, 1))
+                    return false;
+
+                in.IgnoreBytes(sizeof(OFFLINE_MESSAGE_DATA_ID));
+
+                uint64_t serverGuid;
+                unsigned char security;
+                uint16_t mtuSize;
+
+                if (!in.Read(serverGuid) || !in.Read(security) || !in.Read(mtuSize))
+                    return false;
+
+                if (mtuSize < MINIMUM_MTU_SIZE)
+                    mtuSize = MINIMUM_MTU_SIZE;
+                if (mtuSize > MAXIMUM_MTU_SIZE)
+                    mtuSize = MAXIMUM_MTU_SIZE;
+
+                {
+                    std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+
+                    bool known = false;
+                    for (ConnectionAttempt &attempt: connectionAttempts) {
+                        if (attempt.systemAddress == systemAddress) {
+                            attempt.nextSendTime = time + attempt.retryInterval;
+                            known = true;
+                            break;
+                        }
+                    }
+
+                    if (!known)
+                        return true;
+                }
+
+                SendOpenConnectionRequest2(systemAddress, mtuSize);
+                return true;
+            }
+
+            case ID_OPEN_CONNECTION_REPLY_2: {
+                if (!IsOfflineMessageMagic(data, length, 1))
+                    return false;
+
+                in.IgnoreBytes(sizeof(OFFLINE_MESSAGE_DATA_ID));
+
+                uint64_t serverGuid;
+                SystemAddress ourAddress;
+                uint16_t mtuSize;
+                unsigned char security;
+
+                if (!in.Read(serverGuid) || !in.Read(ourAddress) || !in.Read(mtuSize) || !in.Read(security))
+                    return false;
+
+                if (mtuSize < MINIMUM_MTU_SIZE)
+                    mtuSize = MINIMUM_MTU_SIZE;
+                if (mtuSize > MAXIMUM_MTU_SIZE)
+                    mtuSize = MAXIMUM_MTU_SIZE;
+
+                {
+                    std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+
+                    bool known = false;
+                    for (auto it = connectionAttempts.begin(); it != connectionAttempts.end(); ++it) {
+                        if (it->systemAddress == systemAddress) {
+                            connectionAttempts.erase(it);
+                            known = true;
+                            break;
+                        }
+                    }
+
+                    if (!known)
+                        return true;
+                }
+
+                std::lock_guard<std::mutex> guard(remoteSystemMutex);
+
+                if (GetRemoteSystemFromSystemAddress(systemAddress) != nullptr)
+                    return true;
+
+                RemoteSystemStruct *remoteSystem = AssignSystemAddressToRemoteSystemList(systemAddress, mtuSize,
+                                                                                         time);
+                if (remoteSystem == nullptr)
+                    return true;
+
+                remoteSystem->guid = RakNetGUID(serverGuid);
+                remoteSystem->weStartedTheConnection = true;
+
+                BitStream out;
+                out.Write((unsigned char) ID_CONNECTION_REQUEST);
+                out.Write(myGuid.g);
+                out.Write((uint64_t) time);
+
+                SendImmediate(remoteSystem, (const char *) out.GetData(), out.GetNumberOfBytesUsed(),
+                              IMMEDIATE_PRIORITY, RELIABLE_ORDERED, 0, time);
+                return true;
+            }
+
+            case ID_ALREADY_CONNECTED:
+            case ID_NO_FREE_INCOMING_CONNECTIONS:
+            case ID_INCOMPATIBLE_PROTOCOL_VERSION: {
+                if (!IsOfflineMessageMagic(data, length, 1) && messageId != ID_INCOMPATIBLE_PROTOCOL_VERSION)
+                    return false;
+
+                FailConnectionAttempt(systemAddress, messageId);
+                return true;
+            }
+
             default:
                 return false;
         }
@@ -548,6 +761,31 @@ namespace RakNet {
                 return true;
             }
 
+            case ID_CONNECTION_REQUEST_ACCEPTED: {
+                if (!remoteSystem->weStartedTheConnection || remoteSystem->connectMode == IS_CONNECTED)
+                    return true;
+
+                remoteSystem->connectMode = IS_CONNECTED;
+
+                BitStream out;
+                out.Write((unsigned char) ID_NEW_INCOMING_CONNECTION);
+                out.Write(remoteSystem->systemAddress);
+
+                for (int i = 0; i < MAXIMUM_NUMBER_OF_INTERNAL_IDS; i++)
+                    out.Write(UNASSIGNED_SYSTEM_ADDRESS);
+
+                out.Write((uint64_t) time);
+                out.Write((uint64_t) time);
+
+                SendImmediate(remoteSystem, (const char *) out.GetData(), out.GetNumberOfBytesUsed(),
+                              IMMEDIATE_PRIORITY, RELIABLE_ORDERED, 0, time);
+
+                Packet *packet = AllocPacket(1, remoteSystem->systemAddress, remoteSystem->guid);
+                packet->data[0] = ID_CONNECTION_REQUEST_ACCEPTED;
+                PushBackPacket(packet);
+                return true;
+            }
+
             case ID_NEW_INCOMING_CONNECTION: {
                 if (remoteSystem->connectMode == IS_CONNECTED)
                     return true;
@@ -604,6 +842,8 @@ namespace RakNet {
                 ProcessNetworkPacket(recvStruct, GetTimeMS());
 
             const TimeMS time = GetTimeMS();
+
+            UpdateConnectionAttempts(time);
 
             std::lock_guard<std::mutex> guard(remoteSystemMutex);
 

@@ -37,6 +37,9 @@ namespace RakNet {
         StartupResult Startup(unsigned int maxConnections, SocketDescriptor *socketDescriptors,
                               unsigned int socketDescriptorCount) override;
 
+        bool Connect(const char *host, unsigned short remotePort, unsigned int attempts = 12,
+                     unsigned int retryIntervalMs = 500) override;
+
         void Shutdown(unsigned int blockDuration) override;
 
         bool IsActive() const override { return endThreads == false; }
@@ -73,9 +76,27 @@ namespace RakNet {
         void SetTimeoutTime(TimeMS timeMS, const SystemAddress target) override;
 
     private:
+        struct ConnectionAttempt {
+            SystemAddress systemAddress;
+            TimeMS nextSendTime;
+            unsigned int attemptsLeft;
+            unsigned int retryInterval;
+            size_t mtuIndex;
+
+            ConnectionAttempt() : nextSendTime(0), attemptsLeft(0), retryInterval(0), mtuIndex(0) {}
+        };
+
         typedef std::unordered_map<SystemAddress, std::unique_ptr<RemoteSystemStruct>, SystemAddressHash> RemoteSystemList;
 
         void UpdateNetworkLoop();
+
+        void UpdateConnectionAttempts(TimeMS time);
+
+        void SendOpenConnectionRequest1(const ConnectionAttempt &attempt);
+
+        void SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize);
+
+        void FailConnectionAttempt(const SystemAddress &systemAddress, unsigned char reason);
 
         void ProcessNetworkPacket(const RNS2RecvStruct &recvStruct, TimeMS time);
 
@@ -121,6 +142,9 @@ namespace RakNet {
 
         std::vector<unsigned char> offlinePingResponse;
         std::mutex offlinePingResponseMutex;
+
+        mutable std::mutex connectionAttemptMutex;
+        std::vector<ConnectionAttempt> connectionAttempts;
 
         RakNetGUID myGuid;
         unsigned int maximumNumberOfPeers;
