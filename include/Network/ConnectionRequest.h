@@ -22,6 +22,8 @@ public:
 
     int getBuildPlatform() const { return mBuildPlatform; }
 
+    const std::string &getLanguageCode() const { return mLanguageCode; }
+
     const SerializedSkin &getSkin() const { return mSkin; }
 
     static std::string decodeBase64Url(const std::string &value);
@@ -47,5 +49,6 @@ private:
     std::string mDeviceId;
     std::string mTitleId;
     int mBuildPlatform = -1;
+    std::string mLanguageCode;
     SerializedSkin mSkin;
 };

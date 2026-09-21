@@ -277,6 +277,7 @@ bool ConnectionRequest::parse(const std::string &authJwt, const std::string &cli
         mDeviceId = findJsonString(clientPayload, "DeviceId");
         mTitleId = findJsonString(clientPayload, "TitleID");
         mBuildPlatform = findJsonInt(clientPayload, "DeviceOS", -1);
+        mLanguageCode = findJsonString(clientPayload, "LanguageCode");
 
         if (mDisplayName.empty())
             mDisplayName = findJsonString(clientPayload, "ThirdPartyName");
