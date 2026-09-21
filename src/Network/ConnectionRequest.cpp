@@ -128,9 +128,11 @@ int ConnectionRequest::findJsonInt(const std::string &json, const std::string &k
     }
 
     bool hasDigit = false;
-    long value = 0;
+    int64_t value = 0;
     while (position < json.size() && json[position] >= '0' && json[position] <= '9') {
         value = value * 10 + (json[position] - '0');
+        if (value > (int64_t) INT32_MAX)
+            return fallback;
         position++;
         hasDigit = true;
     }
