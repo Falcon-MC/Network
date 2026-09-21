@@ -9,6 +9,52 @@ namespace {
     const char *GEOMETRY_ENGINE_VERSION = "0.0.0";
     const char *DEFAULT_RESOURCE_PATCH = "{\"geometry\":{\"default\":\"geometry.humanoid.custom\"}}";
 
+    struct PersonaPieceTypeName {
+        const char *mSerializeName;
+        const char *mTypeName;
+    };
+
+    const PersonaPieceTypeName PERSONA_PIECE_TYPES[] = {
+            {"unknown", "persona_unknown"},
+            {"skeleton", "persona_skeleton"},
+            {"body", "persona_body"},
+            {"skin", "persona_skin"},
+            {"bottom", "persona_bottom"},
+            {"feet", "persona_feet"},
+            {"dress", "persona_dress"},
+            {"top", "persona_top"},
+            {"high_pants", "persona_high_pants"},
+            {"hands", "persona_hand"},
+            {"outerwear", "persona_outerwear"},
+            {"facialhair", "persona_facial_hair"},
+            {"mouth", "persona_mouth"},
+            {"eyes", "persona_eyes"},
+            {"hair", "persona_hair"},
+            {"hood", "persona_hood"},
+            {"back", "persona_back"},
+            {"faceaccessory", "persona_face_accessory"},
+            {"head", "persona_head"},
+            {"legs", "persona_legs"},
+            {"leftleg", "persona_left_leg"},
+            {"rightleg", "persona_right_leg"},
+            {"arms", "persona_arms"},
+            {"leftarm", "persona_left_arm"},
+            {"rightarm", "persona_right_arm"},
+            {"capes", "persona_capes"},
+            {"classicskin", "persona_classic_skin"},
+            {"emote", "persona_emote"}
+    };
+
+    int32_t resolvePersonaPieceType(const std::string &name) {
+        const int32_t count = (int32_t) (sizeof(PERSONA_PIECE_TYPES) / sizeof(PERSONA_PIECE_TYPES[0]));
+        for (int32_t index = 0; index < count; ++index) {
+            if (name == PERSONA_PIECE_TYPES[index].mSerializeName || name == PERSONA_PIECE_TYPES[index].mTypeName)
+                return index;
+        }
+
+        return 0;
+    }
+
     int decodeBase64Char(char c) {
         if (c >= 'A' && c <= 'Z') return c - 'A';
         if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -311,7 +357,7 @@ void ConnectionRequest::parseSkin(const std::string &clientPayload) {
     for (const std::string &object: extractJsonArrayObjects(clientPayload, "PersonaPieces")) {
         PersonaPieceData piece;
         piece.mId = findJsonString(object, "PieceId");
-        piece.mPieceType = 0;
+        piece.mPieceType = resolvePersonaPieceType(findJsonString(object, "PieceType"));
         piece.mPackId = Uuid::fromString(findJsonString(object, "PackId"));
         piece.mProductId = findJsonString(object, "ProductId");
         piece.mIsDefault = findJsonBool(object, "IsDefault");
@@ -320,7 +366,7 @@ void ConnectionRequest::parseSkin(const std::string &clientPayload) {
 
     for (const std::string &object: extractJsonArrayObjects(clientPayload, "PieceTintColors")) {
         PersonaPieceTintData tint;
-        tint.mType = findJsonString(object, "PieceType");
+        tint.mType = PERSONA_PIECE_TYPES[resolvePersonaPieceType(findJsonString(object, "PieceType"))].mSerializeName;
         tint.mColors.assign(4, 0);
         skin.mTintColors.push_back(tint);
     }
