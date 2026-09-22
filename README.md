@@ -65,8 +65,6 @@ cmake --build build
 - [Protocol](https://github.com/Falcon-MC/Protocol) - packets and network types
 - [NBT](https://github.com/Falcon-MC/NBT) - NBT tags and binary streams
 - [BedrockData](https://github.com/Falcon-MC/BedrockData) - game data files, versioned by protocol
-- [DataGen](https://github.com/Falcon-MC/DataGen) - generates the game data from a dedicated server
-
 ## Licensing information
 
 Falcon Network is licensed under the [GNU Lesser General Public License v3.0](LICENSE), which supplements
