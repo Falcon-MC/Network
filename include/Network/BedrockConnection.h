@@ -124,6 +124,19 @@ public:
     void setGameData(std::shared_ptr<StartGamePacket> startGame, std::shared_ptr<ItemRegistryPacket> itemRegistry,
                      int chunkRadius);
 
+    bool readRaw(std::string &outPayload, int timeoutMs = -1, const std::atomic<bool> *cancel = nullptr);
+
+    std::shared_ptr<Packet> readPacket(int timeoutMs = -1, const std::atomic<bool> *cancel = nullptr);
+
+    bool startGame(const StartGamePacket &startGame, const ItemRegistryPacket *itemRegistry, int maxChunkRadius,
+                   unsigned int timeoutMs, const std::atomic<bool> *cancel, std::string &outError);
+
+    bool spawn(unsigned int timeoutMs, const std::atomic<bool> *cancel, std::string &outError);
+
+    void setSpawnReceived(bool received) {
+        mSpawnReceived = received;
+    }
+
     static bool peekPacketId(const std::string &payload, MinecraftPacketIds &outId);
 
     static NetworkPeer::Reliability toPeerReliability(const Packet &packet);
@@ -132,6 +145,11 @@ public:
 
 private:
     void _handleDisconnectPacket(std::string payload);
+
+    bool _waitFor(MinecraftPacketIds id, int timeoutMs, const std::atomic<bool> *cancel,
+                  std::deque<std::string> &skipped, std::string &outPayload, std::string &outError);
+
+    void _restoreSkipped(std::deque<std::string> &skipped);
 
     Side mSide;
     std::shared_ptr<NetworkPeer> mTransport;
@@ -152,7 +170,9 @@ private:
     std::shared_ptr<StartGamePacket> mStartGame;
     std::shared_ptr<ItemRegistryPacket> mItemRegistry;
     int mChunkRadius;
+    bool mSpawnReceived = false;
 
+    std::recursive_mutex mSendMutex;
     std::atomic<bool> mClosed;
     mutable std::mutex mReasonMutex;
     std::string mDisconnectReason;

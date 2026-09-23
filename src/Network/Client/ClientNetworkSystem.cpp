@@ -368,9 +368,19 @@ namespace {
         }
 
         void _tryFinalise() {
+            if (mSettings.mDeferSpawn) {
+                if (!mGameDataReceived)
+                    return;
+
+                mConnection.setSpawnReceived(mWaitingForSpawn);
+                mDone = true;
+                return;
+            }
+
             if (!mWaitingForSpawn || !mGameDataReceived)
                 return;
 
+            mConnection.setSpawnReceived(true);
             mWaitingForSpawn = false;
             mGameDataReceived = false;
 

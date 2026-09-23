@@ -42,7 +42,8 @@ EncryptedNetworkPeer::EncryptedNetworkPeer(std::shared_ptr<NetworkPeer> peer) : 
 EncryptedNetworkPeer::~EncryptedNetworkPeer() {
     EVP_CIPHER_CTX_free(mEncryptCipher);
     EVP_CIPHER_CTX_free(mDecryptCipher);
-    EVP_MD_CTX_free(mDigest);
+    EVP_MD_CTX_free(mSendDigest);
+    EVP_MD_CTX_free(mReceiveDigest);
     OPENSSL_cleanse(mKey.data(), mKey.size());
 }
 
@@ -50,16 +51,20 @@ bool EncryptedNetworkPeer::enableEncryption(const EncryptionKey &key) {
     if (mEncryptCipher != nullptr)
         return false;
 
-    mDigest = EVP_MD_CTX_new();
+    mSendDigest = EVP_MD_CTX_new();
+    mReceiveDigest = EVP_MD_CTX_new();
     mEncryptCipher = createCipher(key);
     mDecryptCipher = createCipher(key);
-    if (mDigest == nullptr || mEncryptCipher == nullptr || mDecryptCipher == nullptr) {
+    if (mSendDigest == nullptr || mReceiveDigest == nullptr || mEncryptCipher == nullptr
+        || mDecryptCipher == nullptr) {
         EVP_CIPHER_CTX_free(mEncryptCipher);
         EVP_CIPHER_CTX_free(mDecryptCipher);
-        EVP_MD_CTX_free(mDigest);
+        EVP_MD_CTX_free(mSendDigest);
+        EVP_MD_CTX_free(mReceiveDigest);
         mEncryptCipher = nullptr;
         mDecryptCipher = nullptr;
-        mDigest = nullptr;
+        mSendDigest = nullptr;
+        mReceiveDigest = nullptr;
         return false;
     }
 
@@ -81,7 +86,7 @@ void EncryptedNetworkPeer::sendPacket(const std::string &data, Reliability relia
         return;
 
     uint8_t checksum[CHECKSUM_SIZE];
-    if (!_checksum(mSendCounter++, data.data() + offset, data.size() - offset, checksum))
+    if (!_checksum(mSendDigest, mSendCounter++, data.data() + offset, data.size() - offset, checksum))
         return;
 
     mSendBuffer.assign(data);
@@ -110,7 +115,7 @@ NetworkPeer::DataStatus EncryptedNetworkPeer::receivePacket(std::string &outData
 
     const size_t payloadSize = outData.size() - offset - CHECKSUM_SIZE;
     uint8_t expected[CHECKSUM_SIZE];
-    if (!_checksum(mReceiveCounter++, outData.data() + offset, payloadSize, expected)
+    if (!_checksum(mReceiveDigest, mReceiveCounter++, outData.data() + offset, payloadSize, expected)
         || CRYPTO_memcmp(expected, outData.data() + offset + payloadSize, CHECKSUM_SIZE) != 0) {
         mFailed = true;
         return DataStatus::NoData;
@@ -136,21 +141,22 @@ bool EncryptedNetworkPeer::usesGamePacketId() const {
     return mPeer->usesGamePacketId();
 }
 
-bool EncryptedNetworkPeer::_checksum(uint64_t counter, const char *data, size_t length, uint8_t out[8]) {
+bool EncryptedNetworkPeer::_checksum(evp_md_ctx_st *digest, uint64_t counter, const char *data, size_t length,
+                                     uint8_t out[8]) {
     uint8_t counterBytes[8];
     for (size_t index = 0; index < sizeof(counterBytes); ++index)
         counterBytes[index] = (uint8_t) (counter >> (index * 8));
 
-    uint8_t digest[EVP_MAX_MD_SIZE];
+    uint8_t hash[EVP_MAX_MD_SIZE];
     unsigned int digestLength = 0;
-    const bool hashed = EVP_DigestInit_ex(mDigest, EVP_sha256(), nullptr) == 1
-                        && EVP_DigestUpdate(mDigest, counterBytes, sizeof(counterBytes)) == 1
-                        && EVP_DigestUpdate(mDigest, data, length) == 1
-                        && EVP_DigestUpdate(mDigest, mKey.data(), mKey.size()) == 1
-                        && EVP_DigestFinal_ex(mDigest, digest, &digestLength) == 1;
+    const bool hashed = EVP_DigestInit_ex(digest, EVP_sha256(), nullptr) == 1
+                        && EVP_DigestUpdate(digest, counterBytes, sizeof(counterBytes)) == 1
+                        && EVP_DigestUpdate(digest, data, length) == 1
+                        && EVP_DigestUpdate(digest, mKey.data(), mKey.size()) == 1
+                        && EVP_DigestFinal_ex(digest, hash, &digestLength) == 1;
     if (!hashed || digestLength < CHECKSUM_SIZE)
         return false;
 
-    std::memcpy(out, digest, CHECKSUM_SIZE);
+    std::memcpy(out, hash, CHECKSUM_SIZE);
     return true;
 }

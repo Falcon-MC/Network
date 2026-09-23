@@ -47,6 +47,7 @@ struct ClientConnectionSettings {
     const PacketCodecContext *mCodecContext = nullptr;
     TransportLayer mTransportLayer = TransportLayer::RakNet;
     NetherNetTarget mNetherNet;
+    bool mDeferSpawn = false;
 };
 
 struct ClientConnectionResult {
