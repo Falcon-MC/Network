@@ -14,10 +14,11 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 class PacketCodecContext;
 
-class RakNetServerTransport;
+class ServerTransport;
 
 struct ListenerSettings {
     unsigned short mPort = 19132;
@@ -29,6 +30,9 @@ struct ListenerSettings {
     std::string mGameVersion;
     unsigned short mCompressionThreshold = 1;
     bool mEncryption = true;
+    bool mRakNet = true;
+    bool mNetherNet = false;
+    std::string mLevelName = "Bedrock level";
     unsigned int mLoginTimeoutMs = 30000;
     const PacketCodecContext *mCodecContext = nullptr;
 };
@@ -82,7 +86,7 @@ private:
 
     struct PendingLogin {
         IncomingConnection mIncoming;
-        std::shared_ptr<RakNetServerTransport> mTransport;
+        std::shared_ptr<ServerTransport> mTransport;
         LoginState mState = LoginState::WaitingNetworkSettings;
         std::chrono::steady_clock::time_point mStarted;
     };
@@ -101,13 +105,21 @@ private:
 
     void _finishLogin(PendingLogin &login);
 
+    bool _addConnector(TransportLayer layer, std::string &outError);
+
+    std::shared_ptr<ServerTransport> _createTransport(const NetworkIdentifier &id,
+                                                      const std::shared_ptr<NetworkPeer> &peer) const;
+
+    void _updatePlayerCount();
+
     ListenerSettings mSettings;
-    std::unique_ptr<Connector> mConnector;
+    std::vector<std::unique_ptr<Connector>> mConnectors;
     std::thread mThread;
     std::atomic<bool> mRunning;
+    std::atomic<int> mPlayerCount;
 
     std::unordered_map<NetworkIdentifier, std::unique_ptr<PendingLogin>, NetworkIdentifier::Hasher> mPending;
-    std::unordered_map<NetworkIdentifier, std::weak_ptr<RakNetServerTransport>, NetworkIdentifier::Hasher> mActive;
+    std::unordered_map<NetworkIdentifier, std::weak_ptr<ServerTransport>, NetworkIdentifier::Hasher> mActive;
 
     std::mutex mAcceptMutex;
     std::condition_variable mAcceptCondition;

@@ -4,7 +4,10 @@
 #include "Network/Crypto/Jwt.h"
 #include "Network/Crypto/KeyPair.h"
 #include "Network/PingedCompatibleServer.h"
+#include "Network/NetherNet/NetherNetConnection.h"
+#include "Network/NetherNet/NetherNetInstance.h"
 #include "Network/RakNetInstance.h"
+#include "Network/Server/NetherNetServerTransport.h"
 #include "Network/Server/RakNetServerTransport.h"
 #include "Network/TransportFactory.h"
 #include "Protocol/Packets/LoginPacket.h"
@@ -42,22 +45,59 @@ bool BedrockListener::listen(const ListenerSettings &settings, std::string &outE
     }
 
     mSettings = settings;
-    mConnector = TransportFactory::createConnector(TransportLayer::RakNet, *this, true);
-    if (mConnector == nullptr) {
-        outError = "could not create the RakNet transport";
+    mPlayerCount.store(0);
+
+    if (!settings.mRakNet && !settings.mNetherNet) {
+        outError = "no transport enabled";
         return false;
     }
 
-    mConnector->setCallbacks(this);
-    if (!mConnector->host(ConnectionDefinition::createFromPorts(settings.mPort, settings.mPortV6,
-                                                                settings.mMaxPlayers))) {
-        mConnector.reset();
-        outError = "could not listen on port " + std::to_string(settings.mPort);
+    if ((settings.mRakNet && !_addConnector(TransportLayer::RakNet, outError))
+        || (settings.mNetherNet && !_addConnector(TransportLayer::NetherNet, outError))) {
+        for (std::unique_ptr<Connector> &connector: mConnectors)
+            connector->disconnect();
+        mConnectors.clear();
         return false;
     }
 
-    RakNetInstance *rakNet = dynamic_cast<RakNetInstance *>(mConnector.get());
+    mRunning.store(true);
+    mThread = std::thread(&BedrockListener::_run, this);
+    return true;
+}
+
+bool BedrockListener::_addConnector(TransportLayer layer, std::string &outError) {
+    std::unique_ptr<Connector> connector = TransportFactory::createConnector(layer, *this, true);
+    if (connector == nullptr) {
+        outError = std::string("could not create the ") + toString(layer) + " transport";
+        return false;
+    }
+
+    connector->setCallbacks(this);
+
+    NetherNetInstance *netherNet = dynamic_cast<NetherNetInstance *>(connector.get());
+    if (netherNet != nullptr) {
+        netherNet->setServerDataProvider([this]() {
+            nethernet::ServerData data;
+            data.mServerName = mSettings.mServerName;
+            data.mProtocol = mSettings.mProtocolVersion;
+            data.mGameVersion = mSettings.mGameVersion;
+            data.mLevelName = mSettings.mLevelName;
+            data.mPlayerCount = mPlayerCount.load();
+            data.mMaxPlayerCount = mSettings.mMaxPlayers;
+            return data;
+        });
+    }
+
+    if (!connector->host(ConnectionDefinition::createFromPorts(mSettings.mPort, mSettings.mPortV6,
+                                                               mSettings.mMaxPlayers))) {
+        outError = std::string("could not listen with ") + toString(layer) + " on port "
+                   + std::to_string(mSettings.mPort);
+        return false;
+    }
+
+    RakNetInstance *rakNet = dynamic_cast<RakNetInstance *>(connector.get());
     if (rakNet != nullptr) {
+        const ListenerSettings &settings = mSettings;
         PingedCompatibleServer announcement;
         announcement.mServerName = settings.mServerName;
         announcement.mSubName = settings.mSubName;
@@ -71,8 +111,7 @@ bool BedrockListener::listen(const ListenerSettings &settings, std::string &outE
         rakNet->announceServer(announcement);
     }
 
-    mRunning.store(true);
-    mThread = std::thread(&BedrockListener::_run, this);
+    mConnectors.push_back(std::move(connector));
     return true;
 }
 
@@ -106,10 +145,9 @@ void BedrockListener::close() {
     mPending.clear();
     mActive.clear();
 
-    if (mConnector != nullptr) {
-        mConnector->disconnect();
-        mConnector.reset();
-    }
+    for (std::unique_ptr<Connector> &connector: mConnectors)
+        connector->disconnect();
+    mConnectors.clear();
 }
 
 bool BedrockListener::onValidateIncomingConnection(const NetworkIdentifier &id) {
@@ -117,13 +155,28 @@ bool BedrockListener::onValidateIncomingConnection(const NetworkIdentifier &id) 
     return (int) (mPending.size() + mActive.size()) < mSettings.mMaxPlayers;
 }
 
+std::shared_ptr<ServerTransport> BedrockListener::_createTransport(const NetworkIdentifier &id,
+                                                                  const std::shared_ptr<NetworkPeer> &peer) const {
+    std::shared_ptr<nethernet::Connection> netherNet = std::dynamic_pointer_cast<nethernet::Connection>(peer);
+    if (netherNet != nullptr)
+        return std::make_shared<NetherNetServerTransport>(netherNet);
+
+    for (const std::unique_ptr<Connector> &connector: mConnectors) {
+        RakNetInstance *rakNet = dynamic_cast<RakNetInstance *>(connector.get());
+        if (rakNet != nullptr)
+            return std::make_shared<RakNetServerTransport>(rakNet->getPeer(), id.getGuid());
+    }
+
+    return nullptr;
+}
+
 void BedrockListener::onNewIncomingConnection(const NetworkIdentifier &id, std::shared_ptr<NetworkPeer> peer) {
-    RakNetInstance *rakNet = dynamic_cast<RakNetInstance *>(mConnector.get());
-    if (rakNet == nullptr)
+    std::shared_ptr<ServerTransport> transport = _createTransport(id, peer);
+    if (transport == nullptr)
         return;
 
     std::unique_ptr<PendingLogin> login(new PendingLogin());
-    login->mTransport = std::make_shared<RakNetServerTransport>(rakNet->getPeer(), id.getGuid());
+    login->mTransport = std::move(transport);
     login->mIncoming.mConnection.reset(new BedrockConnection(BedrockConnection::Side::Server, std::move(peer),
                                                              std::shared_ptr<ClientTransport>(login->mTransport)));
     login->mIncoming.mConnection->setCodecContext(mSettings.mCodecContext);
@@ -146,7 +199,7 @@ void BedrockListener::onConnectionClosed(const NetworkIdentifier &id, Disconnect
     if (active == mActive.end())
         return;
 
-    std::shared_ptr<RakNetServerTransport> transport = active->second.lock();
+    std::shared_ptr<ServerTransport> transport = active->second.lock();
     if (transport != nullptr)
         transport->markClosed(reason);
     mActive.erase(active);
@@ -158,10 +211,23 @@ void BedrockListener::onReceiveIPSupport(RakPeerHelper::IPSupport support) {
 
 void BedrockListener::_run() {
     while (mRunning.load()) {
-        mConnector->runEvents();
+        for (std::unique_ptr<Connector> &connector: mConnectors)
+            connector->runEvents();
+
         _tickLogins();
+        _updatePlayerCount();
         std::this_thread::sleep_for(std::chrono::milliseconds(LISTENER_IDLE_WAIT_MS));
     }
+}
+
+void BedrockListener::_updatePlayerCount() {
+    int count = 0;
+    for (auto &entry: mActive) {
+        std::shared_ptr<ServerTransport> transport = entry.second.lock();
+        if (transport != nullptr && transport->isConnected())
+            count++;
+    }
+    mPlayerCount.store(count);
 }
 
 void BedrockListener::_tickLogins() {
