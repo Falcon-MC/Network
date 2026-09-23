@@ -8,11 +8,13 @@
 #include "Protocol/Packets/ChunkRadiusUpdatedPacket.h"
 #include "Protocol/Packets/DisconnectPacket.h"
 #include "Protocol/Packets/ItemRegistryPacket.h"
+#include "Protocol/Packets/JigsawStructureDataPacket.h"
 #include "Protocol/Packets/PlayStatusPacket.h"
 #include "Protocol/Packets/RequestChunkRadiusPacket.h"
 #include "Protocol/Packets/ServerToClientHandshakePacket.h"
 #include "Protocol/Packets/SetLocalPlayerAsInitializedPacket.h"
 #include "Protocol/Packets/StartGamePacket.h"
+#include "Protocol/Packets/VoxelShapesPacket.h"
 
 #include <algorithm>
 #include <chrono>
@@ -391,6 +393,16 @@ void BedrockConnection::_restoreSkipped(std::deque<std::string> &skipped) {
 bool BedrockConnection::startGame(const StartGamePacket &startGame, const ItemRegistryPacket *itemRegistry,
                                   int maxChunkRadius, unsigned int timeoutMs, const std::atomic<bool> *cancel,
                                   std::string &outError) {
+    JigsawStructureDataPacket structures;
+    structures.mJigsawStructureData.put("processors", Tag::ofList(Tag::Type::Compound));
+    structures.mJigsawStructureData.put("template_pools", Tag::ofList(Tag::Type::Compound));
+    structures.mJigsawStructureData.put("jigsaws", Tag::ofList(Tag::Type::Compound));
+    structures.mJigsawStructureData.put("structure_sets", Tag::ofList(Tag::Type::Compound));
+    send(structures);
+
+    VoxelShapesPacket shapes;
+    send(shapes);
+
     send(startGame);
     if (itemRegistry != nullptr)
         send(*itemRegistry);
