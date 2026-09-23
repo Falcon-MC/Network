@@ -194,6 +194,7 @@ namespace {
         settings.mProtocolVersion = PROTOCOL_VERSION;
         settings.mGameVersion = GAME_VERSION;
         settings.mNetherNet = true;
+        settings.mAuthentication = authentication.get();
 
         for (;;) {
             BedrockListener listener;
