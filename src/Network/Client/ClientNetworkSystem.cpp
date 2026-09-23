@@ -120,7 +120,8 @@ namespace {
             std::shared_ptr<PacketType> typed = std::dynamic_pointer_cast<PacketType>(packet);
 
             if (typed == nullptr)
-                outError = std::string("could not decode ") + PacketType().getName();
+                outError = std::string("could not decode ") + PacketType().getName() + ": "
+                           + mConnection.getLastDecodeError();
 
             return typed;
         }

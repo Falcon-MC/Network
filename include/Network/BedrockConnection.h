@@ -79,6 +79,8 @@ public:
 
     std::shared_ptr<Packet> decode(std::string payload) const;
 
+    std::string getLastDecodeError() const;
+
     void deferRaw(std::string payload);
 
     void update();
@@ -176,4 +178,5 @@ private:
     std::atomic<bool> mClosed;
     mutable std::mutex mReasonMutex;
     std::string mDisconnectReason;
+    mutable std::string mLastDecodeError;
 };

@@ -1,5 +1,7 @@
 #include "Network/BedrockConnection.h"
 
+#include "Core/Utility/EncodingSettings.h"
+#include "Core/Utility/ReadOnlyBinaryStream.h"
 #include "Network/Client/RakNetClient.h"
 #include "Network/Crypto/KeyPair.h"
 #include "Protocol/MinecraftPackets.h"
@@ -20,6 +22,20 @@
 namespace {
 
     const int READ_IDLE_WAIT_MS = 1;
+    const size_t SERVER_MAX_LIST_SIZE = 1024 * 1024;
+    const size_t SERVER_MAX_BYTE_ARRAY_SIZE = 16 * 1024 * 1024;
+    const size_t SERVER_MAX_STRING_LENGTH = 1024 * 1024;
+
+    const EncodingSettings &serverPacketLimits() {
+        static const EncodingSettings settings = []() {
+            EncodingSettings limits;
+            limits.mMaxListSize = SERVER_MAX_LIST_SIZE;
+            limits.mMaxByteArraySize = SERVER_MAX_BYTE_ARRAY_SIZE;
+            limits.mMaxStringLength = SERVER_MAX_STRING_LENGTH;
+            return limits;
+        }();
+        return settings;
+    }
 
 }
 
@@ -201,15 +217,28 @@ std::shared_ptr<Packet> BedrockConnection::decode(std::string payload) const {
         return nullptr;
 
     ReadOnlyBinaryStream stream(std::move(payload));
+    if (mSide == Side::Client)
+        stream.setEncodingSettings(serverPacketLimits());
 
     try {
         packet->readHeader(stream);
         packet->read(stream, *mCodecContext);
+    } catch (const std::exception &exception) {
+        std::lock_guard<std::mutex> guard(mReasonMutex);
+        mLastDecodeError = exception.what();
+        return nullptr;
     } catch (...) {
+        std::lock_guard<std::mutex> guard(mReasonMutex);
+        mLastDecodeError = "unknown error";
         return nullptr;
     }
 
     return packet;
+}
+
+std::string BedrockConnection::getLastDecodeError() const {
+    std::lock_guard<std::mutex> guard(mReasonMutex);
+    return mLastDecodeError;
 }
 
 std::shared_ptr<Packet> BedrockConnection::receive() {
