@@ -55,3 +55,9 @@ if (WIN32)
 else ()
     target_link_libraries(FalconNetwork PUBLIC ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
 endif ()
+
+option(FALCON_NETWORK_BUILD_EXAMPLES "Build the Falcon.Network examples" OFF)
+
+if (FALCON_NETWORK_BUILD_EXAMPLES)
+    add_subdirectory(examples/Proxy)
+endif ()
