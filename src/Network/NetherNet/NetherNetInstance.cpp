@@ -14,6 +14,7 @@
 namespace {
 
     const int GATHERING_TIMEOUT_SECONDS = 15;
+    const unsigned int SIGNAL_TIMEOUT_MS = 10000;
     const char *IDENTITY_DOMAIN = "self";
 
     unsigned long long randomNetworkID() {
@@ -113,6 +114,8 @@ void NetherNetInstance::disconnect() {
     if (!mIsHosting)
         return;
 
+    mIsHosting = false;
+    _detachSignaling();
     mDiscovery.stop();
     mSignaling.stop();
 
@@ -144,8 +147,126 @@ std::shared_ptr<NetworkPeer> NetherNetInstance::getPeerForUser(const NetworkIden
     return it == mPeers.end() ? nullptr : it->second;
 }
 
+std::string NetherNetInstance::_signalKey(const std::string &networkID, uint64_t connectionID) {
+    return networkID + ":" + std::to_string(connectionID);
+}
+
+void NetherNetInstance::attachSignaling(const std::shared_ptr<nethernet::Signaling> &signaling) {
+    _detachSignaling();
+    if (signaling == nullptr)
+        return;
+
+    nethernet::Credentials credentials;
+    std::string error;
+    if (signaling->requestCredentials(credentials, SIGNAL_TIMEOUT_MS, error))
+        setCredentials(credentials);
+    else
+        LOG_WARN(LogAreaID::Network, "Could not fetch the NetherNet relay credentials: %s", error.c_str());
+
+    std::lock_guard<std::mutex> lock(mMutex);
+    mOnlineSignaling = signaling;
+    mSignalSubscription = signaling->subscribe([this](const nethernet::Signal &signal) {
+        _onSignal(signal);
+    });
+}
+
+void NetherNetInstance::_detachSignaling() {
+    std::shared_ptr<nethernet::Signaling> signaling;
+    std::vector<std::thread> threads;
+
+    {
+        std::lock_guard<std::mutex> lock(mMutex);
+        signaling = std::move(mOnlineSignaling);
+        mOnlineSignaling = nullptr;
+        threads.swap(mNegotiationThreads);
+    }
+
+    if (signaling != nullptr) {
+        signaling->unsubscribe(mSignalSubscription);
+        signaling->close();
+    }
+
+    for (std::thread &thread: threads) {
+        if (thread.joinable())
+            thread.join();
+    }
+
+    std::lock_guard<std::mutex> lock(mMutex);
+    mNegotiating.clear();
+    mBufferedCandidates.clear();
+}
+
+void NetherNetInstance::_onSignal(const nethernet::Signal &signal) {
+    if (signal.mType == nethernet::SIGNAL_TYPE_CANDIDATE) {
+        _addRemoteCandidate(_signalKey(signal.mNetworkID, signal.mConnectionID), signal.mData);
+        return;
+    }
+
+    if (signal.mType != nethernet::SIGNAL_TYPE_OFFER || !mIsHosting)
+        return;
+
+    std::lock_guard<std::mutex> lock(mMutex);
+    mNegotiationThreads.emplace_back(&NetherNetInstance::_answerOffer, this, signal);
+}
+
+void NetherNetInstance::_answerOffer(nethernet::Signal offer) {
+    std::shared_ptr<nethernet::Signaling> signaling;
+
+    {
+        std::lock_guard<std::mutex> lock(mMutex);
+        signaling = mOnlineSignaling;
+    }
+
+    if (signaling == nullptr)
+        return;
+
+    const std::string key = _signalKey(offer.mNetworkID, offer.mConnectionID);
+
+    std::string answer;
+    int errorCode = 0;
+    const bool accepted = _negotiate(offer.mNetworkID, offer.mData, answer, errorCode, key);
+
+    nethernet::Signal response;
+    response.mConnectionID = offer.mConnectionID;
+    response.mNetworkID = offer.mNetworkID;
+
+    if (accepted) {
+        response.mType = nethernet::SIGNAL_TYPE_ANSWER;
+        response.mData = answer;
+    } else {
+        response.mType = nethernet::SIGNAL_TYPE_ERROR;
+        response.mData = std::to_string(errorCode != 0 ? errorCode : (int) nethernet::ErrorCodeGenericFailure);
+    }
+
+    std::string error;
+    if (!signaling->signal(response, SIGNAL_TIMEOUT_MS, error))
+        LOG_WARN(LogAreaID::Network, "Could not answer the NetherNet offer from %s: %s", offer.mNetworkID.c_str(),
+                 error.c_str());
+}
+
+void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const std::string &candidate) {
+    std::shared_ptr<rtc::PeerConnection> peerConnection;
+
+    {
+        std::lock_guard<std::mutex> lock(mMutex);
+        const auto it = mNegotiating.find(signalKey);
+        peerConnection = it != mNegotiating.end() ? it->second.lock() : nullptr;
+
+        if (peerConnection == nullptr) {
+            mBufferedCandidates[signalKey].push_back(candidate);
+            return;
+        }
+    }
+
+    try {
+        peerConnection->addRemoteCandidate(rtc::Candidate(nethernet::Description::stripCandidatePrefix(candidate), "0"));
+    } catch (const std::exception &error) {
+        LOG_WARN(LogAreaID::Network, "Could not add a remote NetherNet candidate: %s", error.what());
+    }
+}
+
 bool NetherNetInstance::_negotiate(const std::string &networkID, const std::string &offer, std::string &answer,
-                                   int &errorCode) {
+                                   int &errorCode, const std::string &signalKey) {
     const std::vector<nethernet::Fingerprint> remoteFingerprints = nethernet::Description::parseFingerprints(offer);
 
     if (remoteFingerprints.empty()) {
@@ -269,6 +390,23 @@ bool NetherNetInstance::_negotiate(const std::string &networkID, const std::stri
         connection->close();
         errorCode = nethernet::ErrorCodeFailedToSetRemoteDescription;
         return false;
+    }
+
+    if (!signalKey.empty()) {
+        std::vector<std::string> buffered;
+
+        {
+            std::lock_guard<std::mutex> lock(mMutex);
+            mNegotiating[signalKey] = peerConnection;
+            const auto it = mBufferedCandidates.find(signalKey);
+            if (it != mBufferedCandidates.end()) {
+                buffered = std::move(it->second);
+                mBufferedCandidates.erase(it);
+            }
+        }
+
+        for (const std::string &candidate: buffered)
+            _addRemoteCandidate(signalKey, candidate);
     }
 
     {
@@ -405,6 +543,13 @@ void NetherNetInstance::runEvents() {
             }
 
             i++;
+        }
+
+        for (auto it = mNegotiating.begin(); it != mNegotiating.end();) {
+            if (it->second.expired())
+                it = mNegotiating.erase(it);
+            else
+                ++it;
         }
 
         for (auto it = mPeers.begin(); it != mPeers.end();) {

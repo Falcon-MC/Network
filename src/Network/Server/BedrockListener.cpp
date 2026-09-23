@@ -6,6 +6,10 @@
 #include "Network/PingedCompatibleServer.h"
 #include "Network/NetherNet/NetherNetConnection.h"
 #include "Network/NetherNet/NetherNetInstance.h"
+#include "Network/NetherNet/NetherNetJsonRpcSignaling.h"
+#include "Network/NetherNet/NetherNetWebSocketSignaling.h"
+#include "Network/Session/MultiplayerSessionHost.h"
+#include "Core/Debug/BedrockLog.h"
 #include "Network/RakNetInstance.h"
 #include "Network/Server/NetherNetServerTransport.h"
 #include "Network/Server/RakNetServerTransport.h"
@@ -28,6 +32,7 @@ namespace {
     const char *GAME_MODE_NAME = "Survival";
     const int GAME_MODE_ID = 1;
     const char *GAME_VERSION_KEY = "GameVersion";
+    const char *NONCE_KEY = "Nonce";
 
 }
 
@@ -95,6 +100,9 @@ bool BedrockListener::_addConnector(TransportLayer layer, std::string &outError)
         return false;
     }
 
+    if (netherNet != nullptr && mSettings.mAuthentication != nullptr)
+        _goOnline(*netherNet);
+
     RakNetInstance *rakNet = dynamic_cast<RakNetInstance *>(connector.get());
     if (rakNet != nullptr) {
         const ListenerSettings &settings = mSettings;
@@ -113,6 +121,54 @@ bool BedrockListener::_addConnector(TransportLayer layer, std::string &outError)
 
     mConnectors.push_back(std::move(connector));
     return true;
+}
+
+void BedrockListener::_goOnline(NetherNetInstance &instance) {
+    std::string error;
+    mNetherNetId = std::to_string(instance.getNetworkId());
+
+    if (mSettings.mOnlineSignaling == NetherNetSignalingType::WebSocket) {
+        std::shared_ptr<nethernet::WebSocketSignaling> signaling = std::make_shared<nethernet::WebSocketSignaling>();
+        if (!signaling->connect(*mSettings.mAuthentication, mNetherNetId, error)) {
+            LOG_WARN(LogAreaID::Network, "Could not connect the NetherNet signaling: %s", error.c_str());
+            return;
+        }
+        mSignaling = signaling;
+    } else {
+        std::shared_ptr<nethernet::JsonRpcSignaling> signaling = std::make_shared<nethernet::JsonRpcSignaling>();
+        if (!signaling->connect(*mSettings.mAuthentication, mNetherNetId, error)) {
+            LOG_WARN(LogAreaID::Network, "Could not connect the NetherNet signaling: %s", error.c_str());
+            return;
+        }
+        mPlayerMessagingId = signaling->getPlayerMessagingID();
+        mSignaling = signaling;
+    }
+
+    instance.attachSignaling(mSignaling);
+    LOG_INFO(LogAreaID::Network, "NetherNet signaling is online as %s",
+             mPlayerMessagingId.empty() ? mNetherNetId.c_str() : mPlayerMessagingId.c_str());
+
+    if (!mSettings.mPublishSession)
+        return;
+
+    HostedWorld world;
+    world.mWorldName = mSettings.mServerName;
+    world.mHostName = mSettings.mSubName;
+    world.mVersion = mSettings.mGameVersion;
+    world.mProtocol = mSettings.mProtocolVersion;
+    world.mMaxMemberCount = mSettings.mMaxPlayers;
+    world.mSignalingType = mSettings.mOnlineSignaling;
+    world.mNetherNetId = mNetherNetId;
+    world.mPlayerMessagingId = mPlayerMessagingId;
+
+    std::unique_ptr<MultiplayerSessionHost> host(new MultiplayerSessionHost(*mSettings.mAuthentication));
+    if (!host->publish(world, error)) {
+        LOG_WARN(LogAreaID::Network, "Could not publish the multiplayer session: %s", error.c_str());
+        return;
+    }
+
+    mSessionHost = std::move(host);
+    mPublishedPlayerCount = 0;
 }
 
 bool BedrockListener::accept(IncomingConnection &outConnection, int timeoutMs) {
@@ -145,9 +201,15 @@ void BedrockListener::close() {
     mPending.clear();
     mActive.clear();
 
+    if (mSessionHost != nullptr) {
+        mSessionHost->close();
+        mSessionHost.reset();
+    }
+
     for (std::unique_ptr<Connector> &connector: mConnectors)
         connector->disconnect();
     mConnectors.clear();
+    mSignaling.reset();
 }
 
 bool BedrockListener::onValidateIncomingConnection(const NetworkIdentifier &id) {
@@ -181,6 +243,8 @@ void BedrockListener::onNewIncomingConnection(const NetworkIdentifier &id, std::
                                                              std::shared_ptr<ClientTransport>(login->mTransport)));
     login->mIncoming.mConnection->setCodecContext(mSettings.mCodecContext);
     login->mStarted = std::chrono::steady_clock::now();
+    login->mRequiresNonce = mSessionHost != nullptr && id.getType() == NetworkIdentifier::Type::NetherNet
+                            && nethernet::JsonRpcSignaling::isMessagingID(id.getNetworkID());
     mPending[id] = std::move(login);
 }
 
@@ -228,6 +292,22 @@ void BedrockListener::_updatePlayerCount() {
             count++;
     }
     mPlayerCount.store(count);
+
+    if (mSessionHost == nullptr || count == mPublishedPlayerCount)
+        return;
+
+    HostedWorld world;
+    world.mWorldName = mSettings.mServerName;
+    world.mHostName = mSettings.mSubName;
+    world.mVersion = mSettings.mGameVersion;
+    world.mProtocol = mSettings.mProtocolVersion;
+    world.mMemberCount = count;
+    world.mMaxMemberCount = mSettings.mMaxPlayers;
+    world.mSignalingType = mSettings.mOnlineSignaling;
+    world.mNetherNetId = mNetherNetId;
+    world.mPlayerMessagingId = mPlayerMessagingId;
+    mSessionHost->update(world);
+    mPublishedPlayerCount = count;
 }
 
 void BedrockListener::_tickLogins() {
@@ -373,6 +453,15 @@ bool BedrockListener::_handleLogin(PendingLogin &login, std::string payload) {
             ConnectionRequest::readJwtPayload(packet->mClientJwt), GAME_VERSION_KEY);
     incoming.mAuthJwt = packet->mAuthJwt;
     incoming.mClientJwt = packet->mClientJwt;
+
+    if (login.mRequiresNonce) {
+        const std::string nonce = ConnectionRequest::findJsonString(
+                ConnectionRequest::readJwtPayload(packet->mClientJwt), NONCE_KEY);
+        if (mSessionHost == nullptr || !mSessionHost->validateNonce(request.getXuid(), nonce)) {
+            connection.disconnect("disconnectionScreen.notAuthenticated");
+            return false;
+        }
+    }
 
     if (!mSettings.mEncryption) {
         _completeLogin(login);

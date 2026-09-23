@@ -2,6 +2,7 @@
 
 #include "Network/BedrockConnection.h"
 #include "Network/Client/ClientConnectionRequest.h"
+#include "Network/Client/ClientNetworkSystem.h"
 #include "Network/Connector.h"
 #include "Network/RakPeerHelper.h"
 
@@ -20,6 +21,16 @@ class PacketCodecContext;
 
 class ServerTransport;
 
+class MinecraftAuthentication;
+
+class MultiplayerSessionHost;
+
+class NetherNetInstance;
+
+namespace nethernet {
+    class Signaling;
+}
+
 struct ListenerSettings {
     unsigned short mPort = 19132;
     unsigned short mPortV6 = 19133;
@@ -35,6 +46,9 @@ struct ListenerSettings {
     std::string mLevelName = "Bedrock level";
     unsigned int mLoginTimeoutMs = 30000;
     const PacketCodecContext *mCodecContext = nullptr;
+    MinecraftAuthentication *mAuthentication = nullptr;
+    NetherNetSignalingType mOnlineSignaling = NetherNetSignalingType::JsonRpc;
+    bool mPublishSession = true;
 };
 
 struct IncomingConnection {
@@ -89,6 +103,7 @@ private:
         std::shared_ptr<ServerTransport> mTransport;
         LoginState mState = LoginState::WaitingNetworkSettings;
         std::chrono::steady_clock::time_point mStarted;
+        bool mRequiresNonce = false;
     };
 
     void _run();
@@ -112,7 +127,14 @@ private:
 
     void _updatePlayerCount();
 
+    void _goOnline(NetherNetInstance &instance);
+
     ListenerSettings mSettings;
+    std::shared_ptr<nethernet::Signaling> mSignaling;
+    std::unique_ptr<MultiplayerSessionHost> mSessionHost;
+    std::string mNetherNetId;
+    std::string mPlayerMessagingId;
+    int mPublishedPlayerCount = -1;
     std::vector<std::unique_ptr<Connector>> mConnectors;
     std::thread mThread;
     std::atomic<bool> mRunning;
