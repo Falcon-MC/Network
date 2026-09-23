@@ -88,7 +88,7 @@ bool MinecraftAuthentication::_discover(std::string &outError) {
 
     const json::Value *serviceUri = production->get("serviceUri");
     const json::Value *issuer = production->get("issuer");
-    const json::Value *playFabTitleId = production->get("playFabTitleId");
+    const json::Value *playFabTitleId = production->get("playfabTitleId");
 
     mEnvironment.mServiceUri = serviceUri != nullptr ? serviceUri->string() : std::string();
     mEnvironment.mIssuer = issuer != nullptr ? issuer->string() : std::string();
