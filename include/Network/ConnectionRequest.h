@@ -16,6 +16,8 @@ public:
 
     const std::string &getXuid() const { return mXuid; }
 
+    const std::string &getPlayFabId() const { return mPlayFabId; }
+
     const std::string &getDeviceId() const { return mDeviceId; }
 
     const std::string &getTitleId() const { return mTitleId; }
@@ -46,6 +48,7 @@ private:
     std::string mDisplayName;
     std::string mIdentity;
     std::string mXuid;
+    std::string mPlayFabId;
     std::string mDeviceId;
     std::string mTitleId;
     int mBuildPlatform = -1;

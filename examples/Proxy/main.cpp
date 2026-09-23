@@ -16,8 +16,8 @@
 
 namespace {
 
-    const int PROTOCOL_VERSION = 2193;
-    const char *GAME_VERSION = "1.26.51";
+    const int PROTOCOL_VERSION = 2216;
+    const char *GAME_VERSION = "1.26.60";
     const unsigned int JOIN_TIMEOUT_MS = 30000;
 
     void printText(const char *direction, const BedrockConnection &connection, const std::string &payload) {

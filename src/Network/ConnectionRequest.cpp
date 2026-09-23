@@ -321,7 +321,7 @@ void ConnectionRequest::parseSkin(const std::string &clientPayload) {
     SerializedSkin skin;
 
     skin.mSkinId = findJsonString(clientPayload, "SkinId");
-    skin.mPlayFabId = findJsonString(clientPayload, "PlayFabId");
+    mPlayFabId = findJsonString(clientPayload, "PlayFabId");
     skin.mSkinResourcePatch = decodeBase64Url(findJsonString(clientPayload, "SkinResourcePatch"));
 
     skin.mSkinData.mWidth = findJsonInt(clientPayload, "SkinImageWidth");
