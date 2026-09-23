@@ -363,10 +363,15 @@ namespace RakNet {
         SendOfflineMessage(out, attempt.systemAddress);
     }
 
-    void RakPeer::SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize) {
+    void RakPeer::SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize,
+                                             bool serverHasSecurity, uint32_t cookie) {
         BitStream out;
         out.Write((unsigned char) ID_OPEN_CONNECTION_REQUEST_2);
         out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
+        if (serverHasSecurity) {
+            out.Write(cookie);
+            out.Write((unsigned char) 0);
+        }
         out.Write(systemAddress);
         out.Write(mtuSize);
         out.Write(myGuid.g);
@@ -589,9 +594,16 @@ namespace RakNet {
 
                 uint64_t serverGuid;
                 unsigned char security;
+                uint32_t cookie = 0;
                 uint16_t mtuSize;
 
-                if (!in.Read(serverGuid) || !in.Read(security) || !in.Read(mtuSize))
+                if (!in.Read(serverGuid) || !in.Read(security))
+                    return false;
+
+                if (security != 0 && !in.Read(cookie))
+                    return false;
+
+                if (!in.Read(mtuSize))
                     return false;
 
                 if (mtuSize < MINIMUM_MTU_SIZE)
@@ -615,7 +627,7 @@ namespace RakNet {
                         return true;
                 }
 
-                SendOpenConnectionRequest2(systemAddress, mtuSize);
+                SendOpenConnectionRequest2(systemAddress, mtuSize, security != 0, cookie);
                 return true;
             }
 
@@ -671,6 +683,7 @@ namespace RakNet {
                 out.Write((unsigned char) ID_CONNECTION_REQUEST);
                 out.Write(myGuid.g);
                 out.Write((uint64_t) time);
+                out.Write((unsigned char) 0);
 
                 SendImmediate(remoteSystem, (const char *) out.GetData(), out.GetNumberOfBytesUsed(),
                               IMMEDIATE_PRIORITY, RELIABLE_ORDERED, 0, time);

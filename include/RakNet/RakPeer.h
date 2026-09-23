@@ -94,7 +94,8 @@ namespace RakNet {
 
         void SendOpenConnectionRequest1(const ConnectionAttempt &attempt);
 
-        void SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize);
+        void SendOpenConnectionRequest2(const SystemAddress &systemAddress, uint16_t mtuSize, bool serverHasSecurity,
+                                        uint32_t cookie);
 
         void FailConnectionAttempt(const SystemAddress &systemAddress, unsigned char reason);
 

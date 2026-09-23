@@ -9,6 +9,12 @@
 
 #endif
 
+namespace {
+
+    const unsigned short WIRE_FAMILY_INET6 = 23;
+
+}
+
 namespace RakNet {
 
     const SystemAddress UNASSIGNED_SYSTEM_ADDRESS;
@@ -91,9 +97,22 @@ namespace RakNet {
 
     void SystemAddress::Serialize(BitStream *out) const {
         if (GetIPVersion() == 6) {
+            const unsigned char *bytes = (const unsigned char *) &addr6.sin6_addr;
+            bool mapped = bytes[10] == 0xff && bytes[11] == 0xff;
+            for (int i = 0; i < 10 && mapped; i++)
+                mapped = bytes[i] == 0;
+
+            if (mapped) {
+                out->Write((unsigned char) 4);
+                for (int i = 12; i < 16; i++)
+                    out->Write((unsigned char) (~bytes[i]));
+                out->Write(GetPort());
+                return;
+            }
+
             out->Write((unsigned char) 6);
-            out->Write((unsigned char) (AF_INET6 & 0xff));
-            out->Write((unsigned char) ((AF_INET6 >> 8) & 0xff));
+            out->Write((unsigned char) (WIRE_FAMILY_INET6 & 0xff));
+            out->Write((unsigned char) ((WIRE_FAMILY_INET6 >> 8) & 0xff));
             out->Write(GetPort());
             out->Write((uint32_t) addr6.sin6_flowinfo);
             out->Write((const char *) &addr6.sin6_addr, 16);
