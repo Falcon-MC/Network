@@ -22,6 +22,8 @@ class KeyPair;
 
 class RakNetClient;
 
+class ClientTransport;
+
 class StartGamePacket;
 
 class ItemRegistryPacket;
@@ -35,6 +37,9 @@ public:
 
     BedrockConnection(Side side, std::shared_ptr<NetworkPeer> transport,
                       std::shared_ptr<RakNetClient> clientTransport = nullptr);
+
+    BedrockConnection(Side side, std::shared_ptr<NetworkPeer> transport,
+                      std::shared_ptr<ClientTransport> clientDriver);
 
     ~BedrockConnection();
 
@@ -100,6 +105,10 @@ public:
         return mClientTransport;
     }
 
+    const std::shared_ptr<ClientTransport> &getClientDriver() const {
+        return mClientDriver;
+    }
+
     const std::shared_ptr<StartGamePacket> &getStartGame() const {
         return mStartGame;
     }
@@ -127,6 +136,7 @@ private:
     Side mSide;
     std::shared_ptr<NetworkPeer> mTransport;
     std::shared_ptr<RakNetClient> mClientTransport;
+    std::shared_ptr<ClientTransport> mClientDriver;
     std::shared_ptr<EncryptedNetworkPeer> mEncryptedPeer;
     std::shared_ptr<CompressedNetworkPeer> mCompressedPeer;
     std::shared_ptr<BatchedNetworkPeer> mBatchedPeer;

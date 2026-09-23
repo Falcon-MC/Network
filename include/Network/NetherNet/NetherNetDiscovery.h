@@ -1,8 +1,13 @@
 #pragma once
 
+#include "Network/NetherNet/NetherNetSignaling.h"
+
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -74,6 +79,48 @@ namespace nethernet {
         uint64_t mNetworkId;
         ServerDataProvider mServerData;
         OfferHandler mOfferHandler;
+    };
+
+    class DiscoveryDialer : public Signaling {
+    public:
+        DiscoveryDialer();
+
+        ~DiscoveryDialer() override;
+
+        bool start(uint64_t networkId, std::string &outError);
+
+        bool signal(const Signal &signal, unsigned int timeoutMs, std::string &outError) override;
+
+        bool requestCredentials(Credentials &outCredentials, unsigned int timeoutMs, std::string &outError) override;
+
+        std::string getNetworkID() const override;
+
+        void close() override;
+
+        std::map<uint64_t, std::string> getResponses() const;
+
+        bool waitForServer(uint64_t networkId, unsigned int timeoutMs, const std::atomic<bool> *cancel) const;
+
+    private:
+        struct Address {
+            std::string mAddress;
+            std::chrono::steady_clock::time_point mLastSeen;
+        };
+
+        void _run();
+
+        void _handleDatagram(const std::string &buffer, const void *from, unsigned int fromLength);
+
+        void _broadcastRequest();
+
+        std::thread mThread;
+        std::atomic<bool> mRunning;
+        long long mSocket;
+        uint64_t mNetworkId;
+
+        mutable std::mutex mAddressMutex;
+        std::map<uint64_t, Address> mAddresses;
+        std::map<uint64_t, std::string> mResponses;
     };
 
 }

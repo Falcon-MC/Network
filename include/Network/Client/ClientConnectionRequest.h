@@ -66,6 +66,7 @@ struct ClientData {
     int mGraphicsMode = 0;
     std::string mPartyId;
     bool mIsPartyLeader = false;
+    std::string mNonce;
 };
 
 class ClientConnectionRequest {

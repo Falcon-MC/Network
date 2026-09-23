@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Network/Client/ClientTransport.h"
 #include "Network/NetworkEnums.h"
 #include "Network/NetworkIdentifier.h"
 #include "Network/RakNetRemotePeer.h"
@@ -10,11 +11,11 @@
 #include <memory>
 #include <string>
 
-class RakNetClient {
+class RakNetClient : public ClientTransport {
 public:
     RakNetClient();
 
-    ~RakNetClient();
+    ~RakNetClient() override;
 
     RakNetClient(const RakNetClient &) = delete;
 
@@ -23,15 +24,15 @@ public:
     bool connect(const std::string &host, unsigned short port, unsigned int timeoutMs,
                  const std::atomic<bool> *cancel, std::string &outError);
 
-    void runEvents();
+    void runEvents() override;
 
-    void close();
+    void close() override;
 
-    bool isConnected() const {
+    bool isConnected() const override {
         return mConnected.load();
     }
 
-    DisconnectFailReason getCloseReason() const {
+    DisconnectFailReason getCloseReason() const override {
         return mCloseReason.load();
     }
 

@@ -422,4 +422,325 @@ namespace nethernet {
                (const struct sockaddr *) from, (socklen_t) fromLength);
     }
 
+    namespace {
+
+        const int DISCOVERY_REQUEST_INTERVAL_MS = 2000;
+        const int DISCOVERY_ADDRESS_EXPIRY_MS = 15000;
+        const int DISCOVERY_WAIT_POLL_MS = 10;
+
+        int hexValue(char character) {
+            if (character >= '0' && character <= '9')
+                return character - '0';
+
+            if (character >= 'a' && character <= 'f')
+                return character - 'a' + 10;
+
+            if (character >= 'A' && character <= 'F')
+                return character - 'A' + 10;
+
+            return -1;
+        }
+
+        bool fromHex(const std::string &text, std::string &out) {
+            if (text.size() % 2 != 0)
+                return false;
+
+            out.clear();
+            out.reserve(text.size() / 2);
+
+            for (size_t index = 0; index < text.size(); index += 2) {
+                const int high = hexValue(text[index]);
+                const int low = hexValue(text[index + 1]);
+
+                if (high < 0 || low < 0)
+                    return false;
+
+                out.push_back((char) ((high << 4) | low));
+            }
+
+            return true;
+        }
+
+        bool parseNetworkId(const std::string &text, uint64_t &out) {
+            if (text.empty() || text.size() > 20)
+                return false;
+
+            uint64_t value = 0;
+
+            for (char character: text) {
+                if (character < '0' || character > '9')
+                    return false;
+
+                const uint64_t digit = (uint64_t) (character - '0');
+
+                if (value > (UINT64_MAX - digit) / 10)
+                    return false;
+
+                value = value * 10 + digit;
+            }
+
+            out = value;
+            return true;
+        }
+
+    }
+
+    DiscoveryDialer::DiscoveryDialer() : mRunning(false), mSocket(FALCON_DISCOVERY_INVALID_SOCKET), mNetworkId(0) {
+    }
+
+    DiscoveryDialer::~DiscoveryDialer() {
+        close();
+    }
+
+    bool DiscoveryDialer::start(uint64_t networkId, std::string &outError) {
+        if (mRunning.load()) {
+            outError = "the LAN discovery is already running";
+            return false;
+        }
+
+        mNetworkId = networkId != 0 ? networkId : generateNetworkID();
+
+        FalconDiscoverySocket descriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (descriptor == FALCON_DISCOVERY_INVALID_SOCKET) {
+            outError = "could not create the LAN discovery socket";
+            return false;
+        }
+
+        int broadcast = 1;
+        setsockopt(descriptor, SOL_SOCKET, SO_BROADCAST, (const char *) &broadcast, sizeof(broadcast));
+
+        struct sockaddr_in address;
+        std::memset(&address, 0, sizeof(address));
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+        address.sin_port = htons(0);
+
+        if (bind(descriptor, (struct sockaddr *) &address, sizeof(address)) != 0) {
+            FALCON_DISCOVERY_CLOSE_SOCKET(descriptor);
+            outError = "could not bind the LAN discovery socket";
+            return false;
+        }
+
+        mSocket = (long long) descriptor;
+        mRunning.store(true);
+        mThread = std::thread(&DiscoveryDialer::_run, this);
+
+        LOG_INFO(LogAreaID::Network, "NetherNet LAN discovery started as %llu", (unsigned long long) mNetworkId);
+        return true;
+    }
+
+    void DiscoveryDialer::close() {
+        if (mRunning.exchange(false)) {
+            if (mSocket != FALCON_DISCOVERY_INVALID_SOCKET) {
+                FALCON_DISCOVERY_CLOSE_SOCKET((FalconDiscoverySocket) mSocket);
+                mSocket = FALCON_DISCOVERY_INVALID_SOCKET;
+            }
+
+            if (mThread.joinable())
+                mThread.join();
+        }
+
+        _markClosed("LAN discovery closed");
+    }
+
+    std::string DiscoveryDialer::getNetworkID() const {
+        return std::to_string(mNetworkId);
+    }
+
+    bool DiscoveryDialer::requestCredentials(Credentials &outCredentials, unsigned int timeoutMs,
+                                             std::string &outError) {
+        (void) timeoutMs;
+
+        if (isClosed()) {
+            outError = "LAN discovery closed";
+            return false;
+        }
+
+        outCredentials = Credentials();
+        return true;
+    }
+
+    std::map<uint64_t, std::string> DiscoveryDialer::getResponses() const {
+        std::lock_guard<std::mutex> lock(mAddressMutex);
+        return mResponses;
+    }
+
+    bool DiscoveryDialer::waitForServer(uint64_t networkId, unsigned int timeoutMs,
+                                        const std::atomic<bool> *cancel) const {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lock(mAddressMutex);
+
+                if (mAddresses.find(networkId) != mAddresses.end())
+                    return true;
+            }
+
+            if (!mRunning.load() || (cancel != nullptr && cancel->load()) ||
+                std::chrono::steady_clock::now() >= deadline)
+                return false;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(DISCOVERY_WAIT_POLL_MS));
+        }
+    }
+
+    bool DiscoveryDialer::signal(const Signal &signal, unsigned int timeoutMs, std::string &outError) {
+        (void) timeoutMs;
+
+        if (!mRunning.load()) {
+            outError = "LAN discovery closed";
+            return false;
+        }
+
+        uint64_t recipientId = 0;
+        if (!parseNetworkId(signal.mNetworkID, recipientId)) {
+            outError = "network ID is not a uint64: " + signal.mNetworkID;
+            return false;
+        }
+
+        std::string address;
+
+        {
+            std::lock_guard<std::mutex> lock(mAddressMutex);
+
+            const auto it = mAddresses.find(recipientId);
+            if (it == mAddresses.end()) {
+                outError = "no address found for network ID " + signal.mNetworkID;
+                return false;
+            }
+
+            address = it->second.mAddress;
+        }
+
+        BinaryStream payload;
+        payload.putLLong(recipientId);
+        putLengthPrefixedBytes(payload, signal.toString());
+
+        const std::string datagram = marshal(PACKET_MESSAGE, mNetworkId, payload.getBuffer());
+        const long long sent = sendto((FalconDiscoverySocket) mSocket, datagram.data(), (int) datagram.size(), 0,
+                                      (const struct sockaddr *) address.data(), (socklen_t) address.size());
+
+        if (sent != (long long) datagram.size()) {
+            outError = "could not send the LAN discovery message";
+            return false;
+        }
+
+        return true;
+    }
+
+    void DiscoveryDialer::_broadcastRequest() {
+        struct sockaddr_in address;
+        std::memset(&address, 0, sizeof(address));
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+        address.sin_port = htons(DISCOVERY_PORT);
+
+        const std::string datagram = marshal(PACKET_REQUEST, mNetworkId, std::string());
+        sendto((FalconDiscoverySocket) mSocket, datagram.data(), (int) datagram.size(), 0,
+               (const struct sockaddr *) &address, (socklen_t) sizeof(address));
+    }
+
+    void DiscoveryDialer::_run() {
+        std::vector<char> buffer(65535);
+        auto nextRequest = std::chrono::steady_clock::now() + std::chrono::milliseconds(DISCOVERY_REQUEST_INTERVAL_MS);
+
+        while (mRunning.load()) {
+            const auto now = std::chrono::steady_clock::now();
+
+            if (now >= nextRequest) {
+                nextRequest = now + std::chrono::milliseconds(DISCOVERY_REQUEST_INTERVAL_MS);
+
+                {
+                    std::lock_guard<std::mutex> lock(mAddressMutex);
+
+                    for (auto it = mAddresses.begin(); it != mAddresses.end();) {
+                        if (now - it->second.mLastSeen > std::chrono::milliseconds(DISCOVERY_ADDRESS_EXPIRY_MS))
+                            it = mAddresses.erase(it);
+                        else
+                            ++it;
+                    }
+                }
+
+                _broadcastRequest();
+            }
+
+            struct timeval timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 250000;
+
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET((FalconDiscoverySocket) mSocket, &readable);
+
+            const int ready = select((int) mSocket + 1, &readable, nullptr, nullptr, &timeout);
+            if (ready <= 0)
+                continue;
+
+            struct sockaddr_storage from;
+            std::memset(&from, 0, sizeof(from));
+            socklen_t fromLength = sizeof(from);
+
+            const long long received = recvfrom((FalconDiscoverySocket) mSocket, buffer.data(), (int) buffer.size(), 0,
+                                                (struct sockaddr *) &from, &fromLength);
+            if (received <= 0)
+                continue;
+
+            _handleDatagram(std::string(buffer.data(), (size_t) received), &from, (unsigned int) fromLength);
+        }
+    }
+
+    void DiscoveryDialer::_handleDatagram(const std::string &buffer, const void *from, unsigned int fromLength) {
+        uint16_t packetId = 0;
+        uint64_t senderId = 0;
+        std::string payload;
+
+        if (!unmarshal(buffer, packetId, senderId, payload))
+            return;
+
+        if (senderId == mNetworkId)
+            return;
+
+        {
+            std::lock_guard<std::mutex> lock(mAddressMutex);
+
+            Address &address = mAddresses[senderId];
+            address.mAddress.assign((const char *) from, fromLength);
+            address.mLastSeen = std::chrono::steady_clock::now();
+        }
+
+        try {
+            if (packetId == PACKET_RESPONSE) {
+                ReadOnlyBinaryStream stream(payload);
+                const std::string hex = getLengthPrefixedBytes(stream);
+
+                std::string application;
+                if (!fromHex(hex, application))
+                    return;
+
+                std::lock_guard<std::mutex> lock(mAddressMutex);
+                mResponses[senderId] = std::move(application);
+                return;
+            }
+
+            if (packetId != PACKET_MESSAGE)
+                return;
+
+            ReadOnlyBinaryStream stream(payload);
+            const uint64_t recipientId = stream.getLLong();
+            const std::string data = getLengthPrefixedBytes(stream);
+
+            if (recipientId != mNetworkId || data.empty() || data == "Ping")
+                return;
+
+            Signal signal;
+            if (!signal.parse(data))
+                return;
+
+            signal.mNetworkID = std::to_string(senderId);
+            _dispatch(signal);
+        } catch (const std::exception &) {
+        }
+    }
+
 }

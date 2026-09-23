@@ -2,9 +2,13 @@
 
 #include "Core/Debug/BedrockLog.h"
 #include "Network/Auth/MinecraftAuthentication.h"
+#include "Network/Client/NetherNetClient.h"
 #include "Network/Client/RakNetClient.h"
 #include "Network/Crypto/EncryptionHandshake.h"
 #include "Network/Crypto/KeyPair.h"
+#include "Network/NetherNet/NetherNetDiscovery.h"
+#include "Network/NetherNet/NetherNetJsonRpcSignaling.h"
+#include "Network/NetherNet/NetherNetWebSocketSignaling.h"
 #include "Protocol/Packets/ChunkRadiusUpdatedPacket.h"
 #include "Protocol/Packets/ClientCacheStatusPacket.h"
 #include "Protocol/Packets/ClientToServerHandshakePacket.h"
@@ -22,6 +26,7 @@
 #include "Protocol/Packets/StartGamePacket.h"
 
 #include <chrono>
+#include <cstdint>
 #include <initializer_list>
 #include <thread>
 #include <utility>
@@ -392,6 +397,163 @@ namespace {
         int mChunkRadius;
     };
 
+    const char *AUTHORIZATION_SERVICE_NAME = "auth";
+
+    std::string hostnameOf(const std::string &url) {
+        size_t start = url.find("://");
+        start = start == std::string::npos ? 0 : start + 3;
+
+        size_t end = url.find_first_of(":/?#", start);
+        if (end == std::string::npos)
+            end = url.size();
+
+        return url.substr(start, end - start);
+    }
+
+    bool parseNetworkId(const std::string &text, uint64_t &out) {
+        if (text.empty() || text.size() > 20)
+            return false;
+
+        uint64_t value = 0;
+
+        for (char character: text) {
+            if (character < '0' || character > '9')
+                return false;
+
+            const uint64_t digit = (uint64_t) (character - '0');
+
+            if (value > (UINT64_MAX - digit) / 10)
+                return false;
+
+            value = value * 10 + digit;
+        }
+
+        out = value;
+        return true;
+    }
+
+    bool createSignaling(const ClientConnectionSettings &settings, std::shared_ptr<nethernet::Signaling> &out,
+                         std::string &outError) {
+        switch (settings.mNetherNet.mSignalingType) {
+            case NetherNetSignalingType::Lan: {
+                std::shared_ptr<nethernet::DiscoveryDialer> discovery = std::make_shared<nethernet::DiscoveryDialer>();
+                if (!discovery->start(0, outError))
+                    return false;
+
+                out = discovery;
+                return true;
+            }
+
+            case NetherNetSignalingType::WebSocket: {
+                if (settings.mAuthentication == nullptr) {
+                    outError = "NetherNet signaling requires an authenticated account";
+                    return false;
+                }
+
+                std::shared_ptr<nethernet::WebSocketSignaling> signaling =
+                        std::make_shared<nethernet::WebSocketSignaling>();
+                if (!signaling->connect(*settings.mAuthentication, std::string(), outError))
+                    return false;
+
+                out = signaling;
+                return true;
+            }
+
+            case NetherNetSignalingType::JsonRpc: {
+                if (settings.mAuthentication == nullptr) {
+                    outError = "NetherNet signaling requires an authenticated account";
+                    return false;
+                }
+
+                std::shared_ptr<nethernet::JsonRpcSignaling> signaling =
+                        std::make_shared<nethernet::JsonRpcSignaling>();
+                if (!signaling->connect(*settings.mAuthentication, std::string(), outError))
+                    return false;
+
+                out = signaling;
+                return true;
+            }
+        }
+
+        outError = "unknown NetherNet signaling type";
+        return false;
+    }
+
+    bool dialNetherNet(const ClientConnectionSettings &settings, const std::shared_ptr<KeyPair> &key,
+                       const std::string &multiplayerToken, std::shared_ptr<NetherNetClient> &out,
+                       std::string &outError) {
+        const NetherNetTarget &target = settings.mNetherNet;
+
+        if (target.mNetworkId.empty()) {
+            outError = "no NetherNet network ID to dial";
+            return false;
+        }
+
+        std::shared_ptr<nethernet::Signaling> signaling = target.mSignaling;
+        const bool owned = signaling == nullptr;
+
+        if (owned && !createSignaling(settings, signaling, outError))
+            return false;
+
+        NetherNetDialOptions options;
+        options.mAllowIdentitylessServer = target.mAllowIdentitylessServer;
+        options.mDisableTrickleIce = target.mDisableTrickleIce;
+        options.mCloseSignalingOnClose = owned;
+
+        nethernet::DiscoveryDialer *discovery = dynamic_cast<nethernet::DiscoveryDialer *>(signaling.get());
+
+        if (discovery != nullptr) {
+            uint64_t networkId = 0;
+            bool found = false;
+
+            if (!parseNetworkId(target.mNetworkId, networkId)) {
+                outError = "LAN network ID is not a uint64: " + target.mNetworkId;
+            } else if (!discovery->waitForServer(networkId, settings.mTimeoutMs, settings.mCancel)) {
+                outError = "no LAN server answered with network ID " + target.mNetworkId;
+            } else {
+                found = true;
+            }
+
+            if (!found) {
+                if (owned)
+                    signaling->close();
+
+                return false;
+            }
+        }
+
+        if (settings.mAuthentication != nullptr) {
+            std::string token = multiplayerToken;
+            std::string authorizationUri;
+
+            if ((token.empty() && !settings.mAuthentication->requestMultiplayerToken(*key, token, outError)) ||
+                !settings.mAuthentication->requestServiceUri(AUTHORIZATION_SERVICE_NAME, authorizationUri,
+                                                              outError)) {
+                if (owned)
+                    signaling->close();
+
+                return false;
+            }
+
+            options.mIdentityKey = key;
+            options.mIdentityToken = token;
+            options.mIdentityDomain = hostnameOf(authorizationUri);
+        }
+
+        std::shared_ptr<NetherNetClient> transport = std::make_shared<NetherNetClient>();
+
+        if (!transport->connect(target.mNetworkId, signaling, options, settings.mTimeoutMs, settings.mCancel,
+                                outError)) {
+            if (owned)
+                signaling->close();
+
+            return false;
+        }
+
+        out = transport;
+        return true;
+    }
+
 }
 
 ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings &settings) {
@@ -419,17 +581,30 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         result.mIdentity.mTitleId = authentication.mTitleId;
     }
 
-    std::shared_ptr<RakNetClient> transport = std::make_shared<RakNetClient>();
-    if (!transport->connect(settings.mHost, settings.mPort, settings.mTimeoutMs, settings.mCancel, result.mError))
-        return result;
+    std::unique_ptr<BedrockConnection> connection;
+    std::string serverAddress;
 
-    std::unique_ptr<BedrockConnection> connection(
-            new BedrockConnection(BedrockConnection::Side::Client, transport->getPeer(), transport));
+    if (settings.mTransportLayer == TransportLayer::NetherNet) {
+        std::shared_ptr<NetherNetClient> transport;
+        if (!dialNetherNet(settings, key, authentication.mMultiplayerToken, transport, result.mError))
+            return result;
+
+        std::shared_ptr<ClientTransport> driver = transport;
+        connection.reset(new BedrockConnection(BedrockConnection::Side::Client, transport->getPeer(), driver));
+        serverAddress = settings.mNetherNet.mNetworkId;
+    } else {
+        std::shared_ptr<RakNetClient> transport = std::make_shared<RakNetClient>();
+        if (!transport->connect(settings.mHost, settings.mPort, settings.mTimeoutMs, settings.mCancel,
+                                result.mError))
+            return result;
+
+        connection.reset(new BedrockConnection(BedrockConnection::Side::Client, transport->getPeer(), transport));
+        serverAddress = settings.mHost + ":" + std::to_string(settings.mPort);
+    }
+
     connection->setCodecContext(settings.mCodecContext);
 
     ClientConnectionRequest::applyIdentityDefaults(result.mIdentity);
-
-    const std::string serverAddress = settings.mHost + ":" + std::to_string(settings.mPort);
     ClientConnectionRequest::applyClientDefaults(result.mClientData, serverAddress, result.mIdentity.mDisplayName,
                                                  settings.mGameVersion);
 

@@ -13,6 +13,17 @@
 BedrockConnection::BedrockConnection(Side side, std::shared_ptr<NetworkPeer> transport,
                                      std::shared_ptr<RakNetClient> clientTransport)
         : mSide(side), mTransport(std::move(transport)), mClientTransport(std::move(clientTransport)),
+          mClientDriver(mClientTransport),
+          mDefaultCodecContext(mDefaultBlockDefinitions, mDefaultItemDefinitions),
+          mCodecContext(&mDefaultCodecContext), mChunkRadius(0), mClosed(false) {
+    mEncryptedPeer = std::make_shared<EncryptedNetworkPeer>(mTransport);
+    mCompressedPeer = std::make_shared<CompressedNetworkPeer>(mEncryptedPeer);
+    mBatchedPeer = std::make_shared<BatchedNetworkPeer>(mCompressedPeer);
+}
+
+BedrockConnection::BedrockConnection(Side side, std::shared_ptr<NetworkPeer> transport,
+                                     std::shared_ptr<ClientTransport> clientDriver)
+        : mSide(side), mTransport(std::move(transport)), mClientDriver(std::move(clientDriver)),
           mDefaultCodecContext(mDefaultBlockDefinitions, mDefaultItemDefinitions),
           mCodecContext(&mDefaultCodecContext), mChunkRadius(0), mClosed(false) {
     mEncryptedPeer = std::make_shared<EncryptedNetworkPeer>(mTransport);
@@ -144,8 +155,8 @@ bool BedrockConnection::receiveRaw(std::string &outPayload) {
         if (mBatchedPeer->receivePacket(outPayload) != NetworkPeer::DataStatus::HasData) {
             if (mEncryptedPeer->hasFailed())
                 close("invalid encrypted packet received");
-            else if (mClientTransport != nullptr && !mClientTransport->isConnected())
-                close(toString(mClientTransport->getCloseReason()));
+            else if (mClientDriver != nullptr && !mClientDriver->isConnected())
+                close(toString(mClientDriver->getCloseReason()));
 
             return false;
         }
@@ -197,8 +208,8 @@ std::shared_ptr<Packet> BedrockConnection::receive() {
 }
 
 void BedrockConnection::update() {
-    if (mClientTransport != nullptr)
-        mClientTransport->runEvents();
+    if (mClientDriver != nullptr)
+        mClientDriver->runEvents();
 
     if (!mClosed.load())
         mBatchedPeer->update();
@@ -237,8 +248,8 @@ void BedrockConnection::close(const std::string &reason) {
 
     mBatchedPeer->flush();
 
-    if (mClientTransport != nullptr)
-        mClientTransport->close();
+    if (mClientDriver != nullptr)
+        mClientDriver->close();
 }
 
 std::string BedrockConnection::getDisconnectReason() const {

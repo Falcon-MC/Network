@@ -191,6 +191,10 @@ std::string ClientConnectionRequest::toJson(const ClientData &data) {
     result += ",\"GraphicsMode\":" + std::to_string(data.mGraphicsMode);
     result += ",\"PartyId\":" + quoted(data.mPartyId);
     result += ",\"IsPartyLeader\":" + boolean(data.mIsPartyLeader);
+
+    if (!data.mNonce.empty())
+        result += ",\"Nonce\":" + quoted(data.mNonce);
+
     result += "}";
     return result;
 }

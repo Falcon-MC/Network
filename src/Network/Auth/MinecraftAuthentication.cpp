@@ -99,6 +99,7 @@ bool MinecraftAuthentication::_discover(std::string &outError) {
         return false;
     }
 
+    mEnvironment.mDiscoveryBody = response.mBody;
     mEnvironment.mLoaded = true;
     return true;
 }
@@ -265,6 +266,42 @@ bool MinecraftAuthentication::requestMultiplayerToken(const KeyPair &key, std::s
     }
 
     outToken = signedToken->string();
+    return true;
+}
+
+bool MinecraftAuthentication::requestServiceToken(std::string &outAuthorization, std::string &outError) {
+    std::lock_guard<std::mutex> guard(mMutex);
+
+    if (!_serviceToken(outAuthorization, outError)) {
+        outError = "request service token: " + outError;
+        return false;
+    }
+
+    return true;
+}
+
+bool MinecraftAuthentication::requestServiceUri(const std::string &serviceName, std::string &outServiceUri,
+                                                std::string &outError) {
+    std::lock_guard<std::mutex> guard(mMutex);
+
+    if (!_discover(outError)) {
+        outError = "obtain environment for " + serviceName + ": " + outError;
+        return false;
+    }
+
+    std::unique_ptr<json::Value> root = json::parse(mEnvironment.mDiscoveryBody);
+    const json::Value *result = root != nullptr ? root->get("result") : nullptr;
+    const json::Value *environments = result != nullptr ? result->get("serviceEnvironments") : nullptr;
+    const json::Value *service = environments != nullptr ? environments->get(serviceName) : nullptr;
+    const json::Value *production = service != nullptr ? service->get("prod") : nullptr;
+    const json::Value *serviceUri = production != nullptr ? production->get("serviceUri") : nullptr;
+
+    if (serviceUri == nullptr || serviceUri->string().empty()) {
+        outError = "\"" + serviceName + "\" has no \"serviceUri\" on \"prod\" in the discovery service environments";
+        return false;
+    }
+
+    outServiceUri = serviceUri->string();
     return true;
 }
 

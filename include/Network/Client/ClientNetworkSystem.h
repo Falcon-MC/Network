@@ -2,6 +2,7 @@
 
 #include "Network/BedrockConnection.h"
 #include "Network/Client/ClientConnectionRequest.h"
+#include "Network/NetworkEnums.h"
 
 #include <atomic>
 #include <memory>
@@ -10,6 +11,24 @@
 class MinecraftAuthentication;
 
 class PacketCodecContext;
+
+namespace nethernet {
+    class Signaling;
+}
+
+enum class NetherNetSignalingType : int {
+    Lan = 0,
+    WebSocket = 1,
+    JsonRpc = 2
+};
+
+struct NetherNetTarget {
+    std::string mNetworkId;
+    NetherNetSignalingType mSignalingType = NetherNetSignalingType::Lan;
+    std::shared_ptr<nethernet::Signaling> mSignaling;
+    bool mAllowIdentitylessServer = false;
+    bool mDisableTrickleIce = false;
+};
 
 struct ClientConnectionSettings {
     std::string mHost;
@@ -26,6 +45,8 @@ struct ClientConnectionSettings {
     unsigned int mTimeoutMs = 30000;
     const std::atomic<bool> *mCancel = nullptr;
     const PacketCodecContext *mCodecContext = nullptr;
+    TransportLayer mTransportLayer = TransportLayer::RakNet;
+    NetherNetTarget mNetherNet;
 };
 
 struct ClientConnectionResult {

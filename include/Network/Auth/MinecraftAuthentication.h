@@ -43,6 +43,10 @@ public:
 
     bool requestMultiplayerToken(const KeyPair &key, std::string &outToken, std::string &outError);
 
+    bool requestServiceToken(std::string &outAuthorization, std::string &outError);
+
+    bool requestServiceUri(const std::string &serviceName, std::string &outServiceUri, std::string &outError);
+
     static bool readChainIdentity(const std::string &chainJson, MinecraftAuthenticationResult &outResult,
                                   std::string &outError);
 
@@ -51,6 +55,7 @@ private:
         std::string mServiceUri;
         std::string mIssuer;
         std::string mPlayFabTitleId;
+        std::string mDiscoveryBody;
         bool mLoaded = false;
     };
 
