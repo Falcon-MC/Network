@@ -5,8 +5,11 @@
 #include "Network/NetworkEnums.h"
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 class MinecraftAuthentication;
 
@@ -30,6 +33,33 @@ struct NetherNetTarget {
     bool mDisableTrickleIce = false;
 };
 
+struct ResourcePackOffer {
+    std::string mPackId;
+    std::string mPackVersion;
+    uint64_t mPackSize = 0;
+    std::string mContentKey;
+    std::string mSubPackName;
+    std::string mCdnUrl;
+};
+
+struct DownloadedResourcePack {
+    ResourcePackOffer mOffer;
+    std::string mData;
+};
+
+enum class ResourcePackDecision : int {
+    Pending = 0,
+    Download = 1,
+    Skip = 2
+};
+
+struct ResourcePackCallbacks {
+    std::function<bool(const ResourcePackOffer &)> mIsCached;
+    std::function<void(const std::vector<ResourcePackOffer> &)> mOffer;
+    std::function<ResourcePackDecision()> mDecision;
+    std::function<void(uint64_t, uint64_t)> mProgress;
+};
+
 struct ClientConnectionSettings {
     std::string mHost;
     unsigned short mPort = 19132;
@@ -48,12 +78,14 @@ struct ClientConnectionSettings {
     TransportLayer mTransportLayer = TransportLayer::RakNet;
     NetherNetTarget mNetherNet;
     bool mDeferSpawn = false;
+    ResourcePackCallbacks mResourcePacks;
 };
 
 struct ClientConnectionResult {
     std::unique_ptr<BedrockConnection> mConnection;
     ClientIdentityData mIdentity;
     ClientData mClientData;
+    std::vector<DownloadedResourcePack> mResourcePacks;
     std::string mError;
 };
 

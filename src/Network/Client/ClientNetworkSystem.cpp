@@ -18,13 +18,17 @@
 #include "Protocol/Packets/PlayStatusPacket.h"
 #include "Protocol/Packets/RequestChunkRadiusPacket.h"
 #include "Protocol/Packets/RequestNetworkSettingsPacket.h"
+#include "Protocol/Packets/ResourcePackChunkDataPacket.h"
+#include "Protocol/Packets/ResourcePackChunkRequestPacket.h"
 #include "Protocol/Packets/ResourcePackClientResponsePacket.h"
+#include "Protocol/Packets/ResourcePackDataInfoPacket.h"
 #include "Protocol/Packets/ResourcePackStackPacket.h"
 #include "Protocol/Packets/ResourcePacksInfoPacket.h"
 #include "Protocol/Packets/ServerToClientHandshakePacket.h"
 #include "Protocol/Packets/SetLocalPlayerAsInitializedPacket.h"
 #include "Protocol/Packets/StartGamePacket.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
@@ -54,7 +58,7 @@ namespace {
             mConnection.send(request);
             mConnection.flush();
 
-            const auto start = std::chrono::steady_clock::now();
+            mLastActivity = std::chrono::steady_clock::now();
             std::string payload;
 
             while (!mDone) {
@@ -63,8 +67,13 @@ namespace {
                     return false;
                 }
 
+                if (mAwaitingDecision) {
+                    mLastActivity = std::chrono::steady_clock::now();
+                    _pollDecision();
+                }
+
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - start).count();
+                        std::chrono::steady_clock::now() - mLastActivity).count();
 
                 if (elapsed >= (long long) mSettings.mTimeoutMs) {
                     outError = "dial timed out";
@@ -77,6 +86,7 @@ namespace {
 
                 while (!mDone && mConnection.receiveRaw(payload)) {
                     received = true;
+                    mLastActivity = std::chrono::steady_clock::now();
 
                     if (!_receive(std::move(payload), outError))
                         return false;
@@ -100,7 +110,160 @@ namespace {
             return true;
         }
 
+        std::vector<DownloadedResourcePack> takeResourcePacks() {
+            return std::move(mCompletedPacks);
+        }
+
     private:
+        struct PackDownload {
+            ResourcePackOffer mOffer;
+            std::string mData;
+            int64_t mChunkSize = 0;
+            int64_t mChunkCount = 0;
+            int64_t mReceivedChunks = 0;
+            bool mStarted = false;
+        };
+
+        static std::string _packKey(const std::string &id, const std::string &version) {
+            return id + "_" + version;
+        }
+
+        void _reportProgress() {
+            if (!mSettings.mResourcePacks.mProgress)
+                return;
+
+            uint64_t received = 0;
+            uint64_t total = 0;
+
+            for (const PackDownload &download: mDownloads) {
+                total += download.mStarted ? (uint64_t) download.mData.size() : download.mOffer.mPackSize;
+                received += download.mStarted && download.mChunkCount > 0
+                            ? (uint64_t) download.mData.size() * (uint64_t) download.mReceivedChunks / (uint64_t) download.mChunkCount
+                            : 0;
+            }
+
+            for (const DownloadedResourcePack &pack: mCompletedPacks) {
+                total += pack.mData.size();
+                received += pack.mData.size();
+            }
+
+            mSettings.mResourcePacks.mProgress(received, total);
+        }
+
+        void _finishPacks() {
+            ResourcePackClientResponsePacket response;
+            response.mStatus = ResourcePackClientResponsePacket::Status::HaveAllPacks;
+            mConnection.send(response);
+            mConnection.flush();
+            _expect({MinecraftPacketIds::ResourcePackStack});
+        }
+
+        void _pollDecision() {
+            ResourcePackDecision decision = mSettings.mResourcePacks.mDecision
+                                            ? mSettings.mResourcePacks.mDecision()
+                                            : ResourcePackDecision::Skip;
+            if (decision == ResourcePackDecision::Pending)
+                return;
+
+            mAwaitingDecision = false;
+
+            if (decision == ResourcePackDecision::Skip) {
+                mDownloads.clear();
+                _finishPacks();
+                return;
+            }
+
+            ResourcePackClientResponsePacket request;
+            request.mStatus = ResourcePackClientResponsePacket::Status::SendPacks;
+
+            for (const PackDownload &download: mDownloads)
+                request.mPackIds.push_back(_packKey(download.mOffer.mPackId, download.mOffer.mPackVersion));
+
+            if (request.mPackIds.empty()) {
+                _finishPacks();
+                return;
+            }
+
+            _expect({MinecraftPacketIds::ResourcePackDataInfo, MinecraftPacketIds::ResourcePackChunkData,
+                     MinecraftPacketIds::ResourcePackStack});
+            mConnection.send(request);
+            mConnection.flush();
+            _reportProgress();
+        }
+
+        PackDownload *_findDownload(const Uuid &id, const std::string &version) {
+            const std::string text = id.toString();
+
+            for (PackDownload &download: mDownloads) {
+                if (download.mOffer.mPackId == text && download.mOffer.mPackVersion == version)
+                    return &download;
+            }
+
+            return nullptr;
+        }
+
+        bool _handleResourcePackDataInfo(std::string payload, std::string &outError) {
+            std::shared_ptr<ResourcePackDataInfoPacket> packet =
+                    _decode<ResourcePackDataInfoPacket>(std::move(payload), outError);
+            if (packet == nullptr)
+                return false;
+
+            PackDownload *download = _findDownload(packet->mPackId, packet->mPackVersion);
+            if (download == nullptr || packet->mChunkCount <= 0 || packet->mMaxChunkSize <= 0)
+                return true;
+
+            download->mStarted = true;
+            download->mChunkSize = packet->mMaxChunkSize;
+            download->mChunkCount = packet->mChunkCount;
+            download->mData.assign((size_t) packet->mCompressedPackSize, '\0');
+
+            for (int64_t chunk = 0; chunk < packet->mChunkCount; ++chunk) {
+                ResourcePackChunkRequestPacket request;
+                request.mPackId = packet->mPackId;
+                request.mPackVersion = packet->mPackVersion;
+                request.mChunkIndex = (int32_t) chunk;
+                mConnection.send(request);
+            }
+
+            mConnection.flush();
+            _reportProgress();
+            return true;
+        }
+
+        bool _handleResourcePackChunkData(std::string payload, std::string &outError) {
+            std::shared_ptr<ResourcePackChunkDataPacket> packet =
+                    _decode<ResourcePackChunkDataPacket>(std::move(payload), outError);
+            if (packet == nullptr)
+                return false;
+
+            PackDownload *download = _findDownload(packet->mPackId, packet->mPackVersion);
+            if (download == nullptr || !download->mStarted || packet->mChunkIndex < 0)
+                return true;
+
+            const size_t offset = (size_t) packet->mChunkIndex * (size_t) download->mChunkSize;
+            if (offset + packet->mData.size() > download->mData.size())
+                download->mData.resize(offset + packet->mData.size());
+
+            download->mData.replace(offset, packet->mData.size(), packet->mData);
+            ++download->mReceivedChunks;
+
+            if (download->mReceivedChunks >= download->mChunkCount) {
+                mCompletedPacks.push_back({download->mOffer, std::move(download->mData)});
+                const std::string id = download->mOffer.mPackId;
+                const std::string version = download->mOffer.mPackVersion;
+                mDownloads.erase(std::remove_if(mDownloads.begin(), mDownloads.end(), [&](const PackDownload &entry) {
+                    return entry.mOffer.mPackId == id && entry.mOffer.mPackVersion == version;
+                }), mDownloads.end());
+            }
+
+            _reportProgress();
+
+            if (mDownloads.empty())
+                _finishPacks();
+
+            return true;
+        }
+
         void _expect(std::initializer_list<MinecraftPacketIds> ids) {
             mExpected.assign(ids.begin(), ids.end());
         }
@@ -157,6 +320,14 @@ namespace {
 
                 case MinecraftPacketIds::ResourcePackStack:
                     handled = _handleResourcePackStack(std::move(payload), outError);
+                    break;
+
+                case MinecraftPacketIds::ResourcePackDataInfo:
+                    handled = _handleResourcePackDataInfo(std::move(payload), outError);
+                    break;
+
+                case MinecraftPacketIds::ResourcePackChunkData:
+                    handled = _handleResourcePackChunkData(std::move(payload), outError);
                     break;
 
                 case MinecraftPacketIds::DimensionData:
@@ -304,11 +475,36 @@ namespace {
             if (packet == nullptr)
                 return false;
 
-            _expect({MinecraftPacketIds::ResourcePackStack});
+            std::vector<ResourcePackOffer> offers;
+            mDownloads.clear();
 
-            ResourcePackClientResponsePacket response;
-            response.mStatus = ResourcePackClientResponsePacket::Status::HaveAllPacks;
-            mConnection.send(response);
+            for (const ResourcePacksInfoPacket::Entry &entry: packet->mResourcePackInfos) {
+                ResourcePackOffer offer;
+                offer.mPackId = entry.mPackId.toString();
+                offer.mPackVersion = entry.mPackVersion;
+                offer.mPackSize = entry.mPackSize;
+                offer.mContentKey = entry.mContentKey;
+                offer.mSubPackName = entry.mSubPackName;
+                offer.mCdnUrl = entry.mCdnUrl;
+
+                if (mSettings.mResourcePacks.mIsCached && mSettings.mResourcePacks.mIsCached(offer))
+                    continue;
+
+                offers.push_back(offer);
+
+                if (offer.mCdnUrl.empty())
+                    mDownloads.push_back({offer});
+            }
+
+            if (offers.empty() || !mSettings.mResourcePacks.mOffer) {
+                mDownloads.clear();
+                _finishPacks();
+                return true;
+            }
+
+            _expect({});
+            mSettings.mResourcePacks.mOffer(offers);
+            mAwaitingDecision = true;
             return true;
         }
 
@@ -406,6 +602,10 @@ namespace {
         bool mWaitingForSpawn;
         bool mGameDataReceived;
         int mChunkRadius;
+        bool mAwaitingDecision = false;
+        std::chrono::steady_clock::time_point mLastActivity;
+        std::vector<PackDownload> mDownloads;
+        std::vector<DownloadedResourcePack> mCompletedPacks;
     };
 
     const char *AUTHORIZATION_SERVICE_NAME = "auth";
@@ -654,6 +854,7 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         return result;
     }
 
+    result.mResourcePacks = sequence.takeResourcePacks();
     result.mConnection = std::move(connection);
     return result;
 }
