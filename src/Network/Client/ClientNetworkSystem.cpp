@@ -114,6 +114,10 @@ namespace {
             return std::move(mCompletedPacks);
         }
 
+        std::vector<ResourcePackOffer> takeOfferedPacks() {
+            return std::move(mOfferedPacks);
+        }
+
     private:
         struct PackDownload {
             ResourcePackOffer mOffer;
@@ -486,6 +490,7 @@ namespace {
                 offer.mContentKey = entry.mContentKey;
                 offer.mSubPackName = entry.mSubPackName;
                 offer.mCdnUrl = entry.mCdnUrl;
+                mOfferedPacks.push_back(offer);
 
                 if (mSettings.mResourcePacks.mIsCached && mSettings.mResourcePacks.mIsCached(offer))
                     continue;
@@ -606,6 +611,7 @@ namespace {
         std::chrono::steady_clock::time_point mLastActivity;
         std::vector<PackDownload> mDownloads;
         std::vector<DownloadedResourcePack> mCompletedPacks;
+        std::vector<ResourcePackOffer> mOfferedPacks;
     };
 
     const char *AUTHORIZATION_SERVICE_NAME = "auth";
@@ -855,6 +861,7 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
     }
 
     result.mResourcePacks = sequence.takeResourcePacks();
+    result.mOfferedPacks = sequence.takeOfferedPacks();
     result.mConnection = std::move(connection);
     return result;
 }

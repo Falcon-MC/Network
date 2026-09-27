@@ -86,6 +86,7 @@ struct ClientConnectionResult {
     ClientIdentityData mIdentity;
     ClientData mClientData;
     std::vector<DownloadedResourcePack> mResourcePacks;
+    std::vector<ResourcePackOffer> mOfferedPacks;
     std::string mError;
 };
 
