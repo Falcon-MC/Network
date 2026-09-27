@@ -493,6 +493,7 @@ namespace {
                 offer.mContentKey = entry.mContentKey;
                 offer.mSubPackName = entry.mSubPackName;
                 offer.mCdnUrl = entry.mCdnUrl;
+                offer.mRequired = packet->mForcedToAccept;
                 mOfferedPacks.push_back(offer);
 
                 if (mSettings.mResourcePacks.mIsCached && mSettings.mResourcePacks.mIsCached(offer))

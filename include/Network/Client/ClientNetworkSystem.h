@@ -40,6 +40,7 @@ struct ResourcePackOffer {
     std::string mContentKey;
     std::string mSubPackName;
     std::string mCdnUrl;
+    bool mRequired = false;
 };
 
 struct DownloadedResourcePack {
