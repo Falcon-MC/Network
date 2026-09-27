@@ -6,6 +6,7 @@
 #include "Network/Client/RakNetClient.h"
 #include "Network/Crypto/EncryptionHandshake.h"
 #include "Network/Crypto/KeyPair.h"
+#include "Network/Http/HttpClient.h"
 #include "Network/NetherNet/NetherNetDiscovery.h"
 #include "Network/NetherNet/NetherNetJsonRpcSignaling.h"
 #include "Network/NetherNet/NetherNetWebSocketSignaling.h"
@@ -39,6 +40,7 @@
 namespace {
 
     const int IDLE_WAIT_MS = 2;
+    const int CDN_TIMEOUT_MS = 120000;
     const int COMPRESSION_NONE_ID = 0xffff;
 
     class LoginSequence {
@@ -173,9 +175,12 @@ namespace {
 
             if (decision == ResourcePackDecision::Skip) {
                 mDownloads.clear();
+                mCdnDownloads.clear();
                 _finishPacks();
                 return;
             }
+
+            _downloadCdnPacks();
 
             ResourcePackClientResponsePacket request;
             request.mStatus = ResourcePackClientResponsePacket::Status::SendPacks;
@@ -193,6 +198,44 @@ namespace {
             mConnection.send(request);
             mConnection.flush();
             _reportProgress();
+        }
+
+        /**
+         * Fetches the packs the server hosts on a CDN over HTTP, following
+         * redirects, the way the game does instead of asking for chunks.
+         */
+        void _downloadCdnPacks() {
+            std::vector<ResourcePackOffer> pending = std::move(mCdnDownloads);
+            mCdnDownloads.clear();
+
+            for (const ResourcePackOffer &offer: pending) {
+                if (mSettings.mCancel && mSettings.mCancel->load())
+                    return;
+
+                std::string url = offer.mCdnUrl;
+                HttpResponse response;
+                std::string error;
+                bool fetched = false;
+
+                for (int hop = 0; hop < 5; ++hop) {
+                    if (!HttpClient::get(url, {}, response, error, CDN_TIMEOUT_MS))
+                        break;
+
+                    if (response.mStatus >= 300 && response.mStatus < 400 && !response.getHeader("Location").empty()) {
+                        url = response.getHeader("Location");
+                        continue;
+                    }
+
+                    fetched = response.mStatus == 200 && !response.mBody.empty();
+                    break;
+                }
+
+                if (!fetched)
+                    continue;
+
+                mCompletedPacks.push_back({offer, std::move(response.mBody)});
+                _reportProgress();
+            }
         }
 
         PackDownload *_findDownload(const Uuid &id, const std::string &version) {
@@ -484,6 +527,7 @@ namespace {
 
             std::vector<ResourcePackOffer> offers;
             mDownloads.clear();
+            mCdnDownloads.clear();
 
             for (const ResourcePacksInfoPacket::Entry &entry: packet->mResourcePackInfos) {
                 ResourcePackOffer offer;
@@ -503,10 +547,13 @@ namespace {
 
                 if (offer.mCdnUrl.empty())
                     mDownloads.push_back({offer});
+                else
+                    mCdnDownloads.push_back(offer);
             }
 
             if (offers.empty() || !mSettings.mResourcePacks.mOffer) {
                 mDownloads.clear();
+                mCdnDownloads.clear();
                 _finishPacks();
                 return true;
             }
@@ -614,6 +661,7 @@ namespace {
         bool mAwaitingDecision = false;
         std::chrono::steady_clock::time_point mLastActivity;
         std::vector<PackDownload> mDownloads;
+        std::vector<ResourcePackOffer> mCdnDownloads;
         std::vector<DownloadedResourcePack> mCompletedPacks;
         std::vector<ResourcePackOffer> mOfferedPacks;
     };
