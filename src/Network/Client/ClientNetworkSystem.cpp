@@ -298,6 +298,9 @@ namespace {
             if (!BedrockConnection::peekPacketId(payload, id))
                 return true;
 
+            if (mSettings.mPacketObserver)
+                mSettings.mPacketObserver(id);
+
             if (!_isExpected(id)) {
                 mDeferred.push_back(std::move(payload));
                 return true;

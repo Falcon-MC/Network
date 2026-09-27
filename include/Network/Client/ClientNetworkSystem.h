@@ -79,6 +79,7 @@ struct ClientConnectionSettings {
     NetherNetTarget mNetherNet;
     bool mDeferSpawn = false;
     ResourcePackCallbacks mResourcePacks;
+    std::function<void(MinecraftPacketIds)> mPacketObserver;
 };
 
 struct ClientConnectionResult {

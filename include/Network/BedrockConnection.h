@@ -139,6 +139,10 @@ public:
         mSpawnReceived = received;
     }
 
+    bool isSpawnReceived() const {
+        return mSpawnReceived;
+    }
+
     static bool peekPacketId(const std::string &payload, MinecraftPacketIds &outId);
 
     static NetworkPeer::Reliability toPeerReliability(const Packet &packet);
