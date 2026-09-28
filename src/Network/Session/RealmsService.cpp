@@ -5,6 +5,7 @@
 #include "Network/Http/HttpClient.h"
 #include "Network/NetherNet/NetherNetJsonRpcSignaling.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -22,6 +23,70 @@ namespace {
     const int RETRY_INTERVAL_MS = 3000;
     const int RETRY_POLL_MS = 50;
     const size_t MAX_ERROR_BODY_PREVIEW = 512;
+    const int REQUEST_ATTEMPTS = 3;
+    const int RETRY_MIN_DELAY_MS = 500;
+    const int RETRY_MAX_DELAY_MS = 8000;
+    std::string lowercase(std::string value) {
+        for (char &c: value)
+            c = (char) std::tolower((unsigned char) c);
+        return value;
+    }
+
+    bool retryable(int status) {
+        return status == 429 || status == 408 || (status >= 500 && status != 503) || status >= 600;
+    }
+
+    std::string text(const json::Value *object, const char *key) {
+        const json::Value *value = object != nullptr ? object->get(key) : nullptr;
+        return value != nullptr ? value->string() : std::string();
+    }
+
+    bool flag(const json::Value *object, const char *key) {
+        const json::Value *value = object != nullptr ? object->get(key) : nullptr;
+        return value != nullptr && value->boolean();
+    }
+
+    double number(const json::Value *object, const char *key) {
+        const json::Value *value = object != nullptr ? object->get(key) : nullptr;
+        return value != nullptr ? value->number() : 0.0;
+    }
+
+    RealmPlayer readPlayer(const json::Value &player) {
+        RealmPlayer result;
+        result.mUuid = text(&player, "uuid");
+        result.mName = text(&player, "Name");
+        result.mPermission = text(&player, "permission");
+        result.mOperator = flag(&player, "operator");
+        result.mAccepted = flag(&player, "accepted");
+        result.mOnline = flag(&player, "online");
+        return result;
+    }
+
+    RealmDescription readRealm(const json::Value &server) {
+        RealmDescription realm;
+        realm.mId = (long long) number(&server, "id");
+        realm.mName = text(&server, "name");
+        realm.mOwner = text(&server, "owner");
+        realm.mOwnerUuid = text(&server, "ownerUUID");
+        realm.mMotd = text(&server, "motd");
+        realm.mState = text(&server, "state");
+        realm.mDefaultPermission = text(&server, "defaultPermission");
+        realm.mWorldType = text(&server, "worldType");
+        realm.mRemoteSubscriptionId = text(&server, "remoteSubscriptionID");
+        realm.mExpired = flag(&server, "expired");
+        realm.mExpiredTrial = flag(&server, "expiredTrial");
+        realm.mGracePeriod = flag(&server, "gracePeriod");
+        realm.mDaysLeft = (int) number(&server, "daysLeft");
+        realm.mMaxPlayers = (int) number(&server, "maxPlayers");
+        realm.mClubId = (int64_t) number(&server, "clubId");
+        if (const json::Value *players = server.get("players"); players != nullptr && players->isArray()) {
+            for (const std::unique_ptr<json::Value> &player: players->mArray) {
+                if (player != nullptr && player->isObject())
+                    realm.mPlayers.push_back(readPlayer(*player));
+            }
+        }
+        return realm;
+    }
 
     std::string normalizeProtocol(const std::string &value) {
         size_t start = 0;
@@ -107,7 +172,27 @@ bool RealmAddress::toTarget(SessionConnectionTarget &outTarget, std::string &out
 RealmsService::RealmsService(MinecraftAuthentication &authentication) : mAuthentication(authentication) {
 }
 
-bool RealmsService::_get(const std::string &path, int &outStatus, std::string &outBody, std::string &outError) {
+bool RealmsService::_cancelled() const {
+    return mCancel != nullptr && mCancel->load();
+}
+
+bool RealmsService::_wait(int milliseconds) const {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+    while (std::chrono::steady_clock::now() < until) {
+        if (_cancelled())
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min(milliseconds, 20)));
+    }
+    return !_cancelled();
+}
+
+/**
+ * Sends one request to the Realms service, retrying network failures, rate
+ * limits, timeouts and server errors with a growing delay that honours the
+ * server's Retry-After.
+ */
+bool RealmsService::_request(const std::string &method, const std::string &path, int &outStatus,
+                             std::string &outBody, std::string &outError) {
     XboxLiveToken token;
     if (!mAuthentication.getXboxLiveAuthentication().requestToken(REALMS_RELYING_PARTY, token, outError)) {
         outError = "request realms token: " + outError;
@@ -119,13 +204,57 @@ bool RealmsService::_get(const std::string &path, int &outStatus, std::string &o
     headers.emplace_back("Client-Version", mAuthentication.getGameVersion());
     headers.emplace_back("Authorization", token.getAuthorizationHeader());
 
-    HttpResponse response;
-    if (!HttpClient::get(std::string(REALMS_BASE_URL) + path, headers, response, outError))
-        return false;
+    const std::string url = std::string(REALMS_BASE_URL) + path;
+    int delay = RETRY_MIN_DELAY_MS;
+    int retryAfter = 0;
 
-    outStatus = response.mStatus;
-    outBody = std::move(response.mBody);
-    return true;
+    for (int attempt = 0; attempt < REQUEST_ATTEMPTS; ++attempt) {
+        if (attempt > 0) {
+            if (!_wait(std::max(delay, retryAfter))) {
+                outError = "realm request cancelled";
+                return false;
+            }
+            delay = std::min(delay * 2, RETRY_MAX_DELAY_MS);
+            retryAfter = 0;
+        }
+
+        struct Call {
+            std::atomic<bool> done{false};
+            bool sent = false;
+            HttpResponse response;
+            std::string error;
+        };
+        auto call = std::make_shared<Call>();
+        std::thread([call, method, url, headers]() {
+            call->sent = method == "POST" ? HttpClient::post(url, headers, std::string(), call->response, call->error)
+                                          : HttpClient::get(url, headers, call->response, call->error);
+            call->done = true;
+        }).detach();
+
+        while (!call->done) {
+            if (!_wait(RETRY_POLL_MS)) {
+                outError = "realm request cancelled";
+                return false;
+            }
+        }
+
+        if (!call->sent) {
+            outError = call->error;
+            continue;
+        }
+
+        HttpResponse &response = call->response;
+        outStatus = response.mStatus;
+        outBody = std::move(response.mBody);
+        if (!retryable(outStatus) || attempt + 1 == REQUEST_ATTEMPTS)
+            return true;
+
+        const std::string header = response.getHeader("Retry-After");
+        if (!header.empty())
+            retryAfter = std::min(atoi(header.c_str()) * 1000, RETRY_MAX_DELAY_MS);
+    }
+
+    return false;
 }
 
 bool RealmsService::requestRealms(std::vector<RealmDescription> &outRealms, std::string &outError) {
@@ -134,7 +263,7 @@ bool RealmsService::requestRealms(std::vector<RealmDescription> &outRealms, std:
     int status = 0;
     std::string body;
 
-    if (!_get("/worlds", status, body, outError))
+    if (!_request("GET", "/worlds", status, body, outError))
         return false;
 
     if (status >= 400) {
@@ -149,25 +278,114 @@ bool RealmsService::requestRealms(std::vector<RealmDescription> &outRealms, std:
         return true;
 
     for (const std::unique_ptr<json::Value> &server: servers->mArray) {
-        if (server == nullptr || !server->isObject())
-            continue;
-
-        const json::Value *id = server->get("id");
-        const json::Value *name = server->get("name");
-        const json::Value *owner = server->get("owner");
-        const json::Value *state = server->get("state");
-        const json::Value *expired = server->get("expired");
-
-        RealmDescription realm;
-        realm.mId = id != nullptr ? (long long) id->number() : 0;
-        realm.mName = name != nullptr ? name->string() : std::string();
-        realm.mOwner = owner != nullptr ? owner->string() : std::string();
-        realm.mState = state != nullptr ? state->string() : std::string();
-        realm.mExpired = expired != nullptr && expired->boolean();
-        outRealms.push_back(std::move(realm));
+        if (server != nullptr && server->isObject())
+            outRealms.push_back(readRealm(*server));
     }
 
     return true;
+}
+
+bool RealmsService::requestRealmByCode(const std::string &code, RealmDescription &outRealm, std::string &outError) {
+    int status = 0;
+    std::string body;
+
+    if (!_request("GET", "/worlds/v1/link/" + code, status, body, outError))
+        return false;
+
+    if (status == 404) {
+        outError = "realm not found";
+        return false;
+    }
+
+    if (status >= 400) {
+        outError = describeError(status, body);
+        return false;
+    }
+
+    std::unique_ptr<json::Value> root = json::parse(body);
+    if (root == nullptr || !root->isObject()) {
+        outError = "invalid realm response";
+        return false;
+    }
+
+    outRealm = readRealm(*root);
+    return true;
+}
+
+bool RealmsService::acceptInviteCode(const std::string &code, RealmDescription &outRealm, std::string &outError) {
+    int status = 0;
+    std::string body;
+
+    if (!_request("POST", "/invites/v1/link/accept/" + code, status, body, outError))
+        return false;
+
+    if (status >= 400) {
+        outError = describeError(status, body);
+        return false;
+    }
+
+    std::unique_ptr<json::Value> root = json::parse(body);
+    if (root == nullptr || !root->isObject()) {
+        outError = "invalid realm response";
+        return false;
+    }
+
+    outRealm = readRealm(*root);
+    return true;
+}
+
+bool RealmsService::requestOnlinePlayers(long long realmId, std::vector<RealmPlayer> &outPlayers,
+                                         std::string &outError) {
+    outPlayers.clear();
+
+    int status = 0;
+    std::string body;
+
+    if (!_request("GET", "/worlds/" + std::to_string(realmId), status, body, outError))
+        return false;
+
+    if (status == 404) {
+        outError = "realm not found";
+        return false;
+    }
+
+    if (status == 403) {
+        outError = "player is not in the realm";
+        return false;
+    }
+
+    if (status >= 400) {
+        outError = describeError(status, body);
+        return false;
+    }
+
+    std::unique_ptr<json::Value> root = json::parse(body);
+    if (root == nullptr || !root->isObject()) {
+        outError = "invalid realm response";
+        return false;
+    }
+
+    outPlayers = readRealm(*root).mPlayers;
+    return true;
+}
+
+std::string RealmsService::inviteCode(const std::string &text) {
+    static const char *const PREFIXES[] = {"https://realms.gg/", "http://realms.gg/", "realms.gg/", "realm/"};
+    const std::string lower = lowercase(text);
+
+    for (const char *prefix: PREFIXES) {
+        const std::string head(prefix);
+        if (lower.rfind(head, 0) != 0)
+            continue;
+
+        std::string code = text.substr(head.size());
+        const size_t query = code.find('?');
+        if (query != std::string::npos)
+            code.resize(query);
+        return code;
+    }
+
+    return {};
 }
 
 bool RealmsService::requestAddress(long long realmId, unsigned int timeoutMs, const std::atomic<bool> *cancel,
@@ -179,7 +397,7 @@ bool RealmsService::requestAddress(long long realmId, unsigned int timeoutMs, co
         int status = 0;
         std::string body;
 
-        if (!_get(path, status, body, outError))
+        if (!_request("GET", path, status, body, outError))
             return false;
 
         if (status == 503) {

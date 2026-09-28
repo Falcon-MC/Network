@@ -34,6 +34,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <algorithm>
+#include <chrono>
+#include <limits>
 
 #ifdef _WIN32
 typedef SOCKET HttpSocket;
@@ -47,7 +50,7 @@ typedef int HttpSocket;
 
 namespace {
 
-    const size_t MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
+
 
     std::string toLower(const std::string &value) {
         std::string result;
@@ -183,7 +186,7 @@ namespace {
 #endif
     }
 
-    bool isResponseComplete(const std::string &raw) {
+    bool isResponseComplete(const std::string &raw, size_t &chunkPosition) {
         const size_t headerEnd = raw.find("\r\n\r\n");
         if (headerEnd == std::string::npos)
             return false;
@@ -192,10 +195,22 @@ namespace {
         const size_t bodyLength = raw.size() - headerEnd - 4;
 
         if (headers.find("transfer-encoding: chunked") != std::string::npos) {
-            if (bodyLength < 5)
-                return false;
-
-            return raw.compare(raw.size() - 5, 5, "0\r\n\r\n") == 0;
+            size_t position = chunkPosition ? chunkPosition : headerEnd + 4;
+            for (;;) {
+                size_t lineEnd = raw.find("\r\n", position);
+                if (lineEnd == std::string::npos) return false;
+                std::string line = raw.substr(position, lineEnd - position);
+                char *end = nullptr;
+                errno = 0;
+                auto size = strtoull(line.c_str(), &end, 16);
+                if (errno || end == line.c_str() || (*end && *end != ';')) return false;
+                position = lineEnd + 2;
+                if (size == 0) return raw.compare(position, 2, "\r\n") == 0 || raw.find("\r\n\r\n", position) != std::string::npos;
+                if (size > raw.size() - position || raw.size() - position - size < 2) return false;
+                if (raw.compare(position + static_cast<size_t>(size), 2, "\r\n") != 0) return false;
+                position += static_cast<size_t>(size) + 2;
+                chunkPosition = position;
+            }
         }
 
         const size_t lengthPosition = headers.find("content-length:");
@@ -220,21 +235,23 @@ std::string HttpResponse::getHeader(const std::string &name) const {
 }
 
 bool HttpClient::_parseUrl(const std::string &url, std::string &host, std::string &port, std::string &path) {
-    if (url.rfind("https://", 0) != 0)
-        return false;
-
-    const std::string rest = url.substr(8);
-    const size_t slash = rest.find('/');
+    bool secure = url.rfind("https://", 0) == 0;
+    if (!secure && url.rfind("http://", 0) != 0) return false;
+    const std::string rest = url.substr(secure ? 8 : 7);
+    const size_t slash = rest.find_first_of("/?#");
     const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
     path = slash == std::string::npos ? "/" : rest.substr(slash);
 
+    if (path.front() != '/') path.insert(path.begin(), '/');
+    path = path.substr(0, path.find('#'));
+    if (url.find_first_of("\r\n") != std::string::npos || authority.find('@') != std::string::npos) return false;
     const size_t colon = authority.rfind(':');
     if (colon != std::string::npos && authority.find(']') == std::string::npos) {
         host = authority.substr(0, colon);
         port = authority.substr(colon + 1);
     } else {
         host = authority;
-        port = "443";
+        port = secure ? "443" : "80";
     }
 
     return !host.empty();
@@ -249,13 +266,16 @@ bool HttpClient::_decodeChunked(const std::string &body, std::string &outBody) {
         if (lineEnd == std::string::npos)
             return false;
 
-        const size_t chunkSize = (size_t) strtoull(body.c_str() + position, nullptr, 16);
+        const std::string sizeText = body.substr(position, lineEnd - position);
+        char *end = nullptr;
+        errno = 0;
+        const auto parsed = strtoull(sizeText.c_str(), &end, 16);
+        if (errno || end == sizeText.c_str() || (*end && *end != ';') || sizeText.front() == '-' || parsed > std::numeric_limits<size_t>::max()) return false;
+        const size_t chunkSize = static_cast<size_t>(parsed);
         position = lineEnd + 2;
-
         if (chunkSize == 0)
-            return true;
-
-        if (position + chunkSize > body.size())
+            return body.compare(position, 2, "\r\n") == 0 || body.find("\r\n\r\n", position) != std::string::npos;
+        if (chunkSize > body.size() - position || body.size() - position - chunkSize < 2 || body.compare(position + chunkSize, 2, "\r\n") != 0)
             return false;
 
         outBody.append(body, position, chunkSize);
@@ -309,8 +329,14 @@ bool HttpClient::_parseResponse(const std::string &raw, HttpResponse &outRespons
 
     const std::string contentLength = outResponse.getHeader("content-length");
     if (!contentLength.empty()) {
-        const size_t length = (size_t) strtoull(contentLength.c_str(), nullptr, 10);
-        outResponse.mBody = body.substr(0, length < body.size() ? length : body.size());
+        char *end = nullptr;
+        errno = 0;
+        const auto length = strtoull(contentLength.c_str(), &end, 10);
+        if (errno || end == contentLength.c_str() || *end || contentLength.front() == '-' || length > body.size()) {
+            outError = "invalid or truncated HTTP content-length";
+            return false;
+        }
+        outResponse.mBody = body.substr(0, static_cast<size_t>(length));
         return true;
     }
 
@@ -354,7 +380,10 @@ std::string HttpClient::encodeForm(const Headers &fields) {
 
 bool HttpClient::request(const std::string &method, const std::string &url, const Headers &headers,
                          const std::string &body, HttpResponse &outResponse, std::string &outError,
-                         int timeoutMs) {
+                         int timeoutMs, size_t maxResponseSize, const std::atomic<bool> *cancel, const std::function<void(size_t)> &progress) {
+    outResponse = {};
+    outError.clear();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     std::string host;
     std::string port;
     std::string path;
@@ -384,7 +413,13 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
         if (descriptor == HTTP_SOCKET_INVALID)
             continue;
 
-        if (connectWithTimeout(descriptor, entry->ai_addr, (int) entry->ai_addrlen, timeoutMs))
+        if (cancel && cancel->load()) {
+            HTTP_SOCKET_CLOSE(descriptor);
+            descriptor = HTTP_SOCKET_INVALID;
+            break;
+        }
+        int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+        if (remaining > 0 && connectWithTimeout(descriptor, entry->ai_addr, (int) entry->ai_addrlen, cancel ? std::min(remaining, 5000) : remaining))
             break;
 
         HTTP_SOCKET_CLOSE(descriptor);
@@ -398,39 +433,45 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
         return false;
     }
 
-    setTimeouts(descriptor, timeoutMs);
+    setTimeouts(descriptor, cancel ? std::min(timeoutMs, 5000) : timeoutMs);
 
-    SSL_CTX *context = SSL_CTX_new(TLS_client_method());
-    if (context == nullptr) {
-        HTTP_SOCKET_CLOSE(descriptor);
-        outError = "could not create TLS context";
-        return false;
+    const bool secure = url.rfind("https://", 0) == 0;
+    SSL_CTX *context = nullptr;
+    SSL *ssl = nullptr;
+    if (secure) {
+        context = SSL_CTX_new(TLS_client_method());
+        if (context == nullptr) {
+            HTTP_SOCKET_CLOSE(descriptor);
+            outError = "could not create TLS context";
+            return false;
+        }
+
+        SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
+        SSL_CTX_set_verify(context, SSL_VERIFY_PEER, nullptr);
+        loadSystemRoots(context);
+
+        ssl = SSL_new(context);
+        if (ssl == nullptr) {
+            SSL_CTX_free(context);
+            HTTP_SOCKET_CLOSE(descriptor);
+            outError = "could not create TLS session";
+            return false;
+        }
+
+        SSL_set_fd(ssl, (int) descriptor);
+        SSL_set_tlsext_host_name(ssl, host.c_str());
+        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        SSL_set1_host(ssl, host.c_str());
+
     }
-
-    SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
-    SSL_CTX_set_verify(context, SSL_VERIFY_PEER, nullptr);
-    loadSystemRoots(context);
-
-    SSL *ssl = SSL_new(context);
-    if (ssl == nullptr) {
-        SSL_CTX_free(context);
-        HTTP_SOCKET_CLOSE(descriptor);
-        outError = "could not create TLS session";
-        return false;
-    }
-
-    SSL_set_fd(ssl, (int) descriptor);
-    SSL_set_tlsext_host_name(ssl, host.c_str());
-    SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-    SSL_set1_host(ssl, host.c_str());
 
     bool success = false;
 
-    if (SSL_connect(ssl) != 1) {
+    if (secure && SSL_connect(ssl) != 1) {
         outError = "TLS handshake with " + host + " failed";
     } else {
         std::string requestText = method + " " + path + " HTTP/1.1\r\n";
-        requestText += "Host: " + host + "\r\n";
+        requestText += "Host: " + host + (port == (secure ? "443" : "80") ? "" : ":" + port) + "\r\n";
         requestText += "Connection: close\r\n";
 
         for (const std::pair<std::string, std::string> &header: headers)
@@ -446,7 +487,8 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
         bool writeFailed = false;
 
         while (sent < requestText.size()) {
-            const int written = SSL_write(ssl, requestText.data() + sent, (int) (requestText.size() - sent));
+            const int written = secure ? SSL_write(ssl, requestText.data() + sent, (int) (requestText.size() - sent))
+                    : static_cast<int>(::send(descriptor, requestText.data() + sent, (int) (requestText.size() - sent), 0));
             if (written <= 0) {
                 writeFailed = true;
                 break;
@@ -459,29 +501,40 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
             outError = "could not send request to " + host;
         } else {
             std::string raw;
+            size_t chunkPosition = 0;
             char buffer[16384];
             bool readFailed = false;
 
             for (;;) {
-                const int read = SSL_read(ssl, buffer, (int) sizeof(buffer));
+                if ((cancel && cancel->load()) || std::chrono::steady_clock::now() >= deadline) {
+                    readFailed = true;
+                    outError = "HTTP request cancelled or timed out";
+                    break;
+                }
+                const int read = secure ? SSL_read(ssl, buffer, (int) sizeof(buffer))
+                        : static_cast<int>(::recv(descriptor, buffer, (int) sizeof(buffer), 0));
 
                 if (read > 0) {
                     raw.append(buffer, (size_t) read);
+                    if (progress) {
+                        size_t headerEnd = raw.find("\r\n\r\n");
+                        if (headerEnd != std::string::npos) progress(raw.size() - headerEnd - 4);
+                    }
 
-                    if (raw.size() > MAX_RESPONSE_SIZE) {
+                    if (raw.size() > maxResponseSize) {
                         readFailed = true;
                         outError = "HTTP response from " + host + " is too large";
                         break;
                     }
 
-                    if (isResponseComplete(raw))
+                    if (isResponseComplete(raw, chunkPosition))
                         break;
 
                     continue;
                 }
 
-                const int error = SSL_get_error(ssl, read);
-                if (error == SSL_ERROR_ZERO_RETURN || (error == SSL_ERROR_SYSCALL && !raw.empty()))
+                const int error = secure ? SSL_get_error(ssl, read) : 0;
+                if ((!secure && read == 0) || (secure && (error == SSL_ERROR_ZERO_RETURN || (error == SSL_ERROR_SYSCALL && !raw.empty()))))
                     break;
 
                 readFailed = true;
@@ -493,7 +546,7 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
                 success = _parseResponse(raw, outResponse, outError);
         }
 
-        SSL_shutdown(ssl);
+        if (ssl) SSL_shutdown(ssl);
     }
 
     SSL_free(ssl);
@@ -503,8 +556,8 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
 }
 
 bool HttpClient::get(const std::string &url, const Headers &headers, HttpResponse &outResponse,
-                     std::string &outError, int timeoutMs) {
-    return request("GET", url, headers, std::string(), outResponse, outError, timeoutMs);
+                     std::string &outError, int timeoutMs, size_t maxResponseSize, const std::atomic<bool> *cancel, const std::function<void(size_t)> &progress) {
+    return request("GET", url, headers, std::string(), outResponse, outError, timeoutMs, maxResponseSize, cancel, progress);
 }
 
 bool HttpClient::post(const std::string &url, const Headers &headers, const std::string &body,

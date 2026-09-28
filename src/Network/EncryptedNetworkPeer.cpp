@@ -51,6 +51,9 @@ bool EncryptedNetworkPeer::enableEncryption(const EncryptionKey &key) {
     if (mEncryptCipher != nullptr)
         return false;
 
+    if (!mPeer->encryptsGamePackets())
+        return true;
+
     mSendDigest = EVP_MD_CTX_new();
     mReceiveDigest = EVP_MD_CTX_new();
     mEncryptCipher = createCipher(key);

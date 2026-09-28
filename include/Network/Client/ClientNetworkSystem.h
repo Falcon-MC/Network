@@ -55,6 +55,7 @@ enum class ResourcePackDecision : int {
 };
 
 struct ResourcePackCallbacks {
+    std::function<bool(const DownloadedResourcePack &, std::string &)> mValidate;
     std::function<bool(const ResourcePackOffer &)> mIsCached;
     std::function<void(const std::vector<ResourcePackOffer> &)> mOffer;
     std::function<ResourcePackDecision()> mDecision;
@@ -81,6 +82,8 @@ struct ClientConnectionSettings {
     bool mDeferSpawn = false;
     ResourcePackCallbacks mResourcePacks;
     std::function<void(MinecraftPacketIds)> mPacketObserver;
+    // May be called from the CDN worker; the receiver must be thread-safe.
+    std::function<void(const std::string &)> mDiagnostic;
 };
 
 struct ClientConnectionResult {

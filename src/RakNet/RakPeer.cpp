@@ -8,7 +8,7 @@
 
 namespace RakNet {
 
-    static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_MTU_SIZE, 1200, 576};
+    static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_OUTGOING_MTU_SIZE, MINIMUM_OUTGOING_MTU_SIZE};
     static const size_t CONNECTION_MTU_SIZE_COUNT = sizeof(CONNECTION_MTU_SIZES) / sizeof(CONNECTION_MTU_SIZES[0]);
 
     static uint64_t GenerateGUID() {
@@ -436,6 +436,7 @@ namespace RakNet {
         remoteSystem->MTUSize = mtuSize;
         remoteSystem->connectMode = IS_CONNECTING;
         remoteSystem->connectionTime = time;
+        remoteSystem->lastPingTime = time;
         remoteSystem->weStartedTheConnection = false;
         remoteSystem->reliabilityLayer.Reset(mtuSize);
 
@@ -505,8 +506,8 @@ namespace RakNet {
                 int mtuSize = (int) length + UDP_HEADER_SIZE;
                 if (mtuSize < MINIMUM_MTU_SIZE)
                     mtuSize = MINIMUM_MTU_SIZE;
-                if (mtuSize > MAXIMUM_MTU_SIZE)
-                    mtuSize = MAXIMUM_MTU_SIZE;
+                if (mtuSize > MAXIMUM_INCOMING_MTU_SIZE)
+                    mtuSize = MAXIMUM_INCOMING_MTU_SIZE;
 
                 BitStream out;
                 out.Write((unsigned char) ID_OPEN_CONNECTION_REPLY_1);
@@ -534,8 +535,8 @@ namespace RakNet {
 
                 if (mtuSize < MINIMUM_MTU_SIZE)
                     mtuSize = MINIMUM_MTU_SIZE;
-                if (mtuSize > MAXIMUM_MTU_SIZE)
-                    mtuSize = MAXIMUM_MTU_SIZE;
+                if (mtuSize > MAXIMUM_INCOMING_MTU_SIZE)
+                    mtuSize = MAXIMUM_INCOMING_MTU_SIZE;
 
                 std::lock_guard<std::mutex> guard(remoteSystemMutex);
 
@@ -606,10 +607,10 @@ namespace RakNet {
                 if (!in.Read(mtuSize))
                     return false;
 
-                if (mtuSize < MINIMUM_MTU_SIZE)
-                    mtuSize = MINIMUM_MTU_SIZE;
-                if (mtuSize > MAXIMUM_MTU_SIZE)
-                    mtuSize = MAXIMUM_MTU_SIZE;
+                if (mtuSize < MINIMUM_OUTGOING_MTU_SIZE)
+                    mtuSize = MINIMUM_OUTGOING_MTU_SIZE;
+                if (mtuSize > MAXIMUM_OUTGOING_MTU_SIZE)
+                    mtuSize = MAXIMUM_OUTGOING_MTU_SIZE;
 
                 {
                     std::lock_guard<std::mutex> guard(connectionAttemptMutex);
@@ -645,10 +646,10 @@ namespace RakNet {
                 if (!in.Read(serverGuid) || !in.Read(ourAddress) || !in.Read(mtuSize) || !in.Read(security))
                     return false;
 
-                if (mtuSize < MINIMUM_MTU_SIZE)
-                    mtuSize = MINIMUM_MTU_SIZE;
-                if (mtuSize > MAXIMUM_MTU_SIZE)
-                    mtuSize = MAXIMUM_MTU_SIZE;
+                if (mtuSize < MINIMUM_OUTGOING_MTU_SIZE)
+                    mtuSize = MINIMUM_OUTGOING_MTU_SIZE;
+                if (mtuSize > MAXIMUM_OUTGOING_MTU_SIZE)
+                    mtuSize = MAXIMUM_OUTGOING_MTU_SIZE;
 
                 {
                     std::lock_guard<std::mutex> guard(connectionAttemptMutex);
@@ -875,6 +876,14 @@ namespace RakNet {
 
             for (auto it = remoteSystemList.begin(); it != remoteSystemList.end();) {
                 RemoteSystemStruct *remoteSystem = it->second.get();
+                if (remoteSystem->connectMode == IS_CONNECTED && time - remoteSystem->lastPingTime >= 500) {
+                    BitStream ping;
+                    ping.Write((unsigned char) ID_CONNECTED_PING);
+                    ping.Write((uint64_t) time);
+                    SendImmediate(remoteSystem, (const char *) ping.GetData(), ping.GetNumberOfBytesUsed(),
+                                  IMMEDIATE_PRIORITY, UNRELIABLE, 0, time);
+                    remoteSystem->lastPingTime = time;
+                }
                 remoteSystem->reliabilityLayer.Update(&socket, remoteSystem->systemAddress, remoteSystem->MTUSize,
                                                       time);
 

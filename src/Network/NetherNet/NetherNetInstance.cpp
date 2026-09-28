@@ -315,6 +315,7 @@ bool NetherNetInstance::_negotiate(const std::string &networkID, const std::stri
     }
 
     rtc::Configuration configuration;
+    configuration.mtu = nethernet::NETWORK_MTU;
     configuration.maxMessageSize = nethernet::MAX_MESSAGE_SIZE + 1;
 
     {

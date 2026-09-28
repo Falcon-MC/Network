@@ -23,10 +23,11 @@ namespace RakNet {
             int MTUSize;
             ConnectionState connectMode;
             TimeMS connectionTime;
+            TimeMS lastPingTime;
             bool weStartedTheConnection;
 
             RemoteSystemStruct()
-                    : MTUSize(MAXIMUM_MTU_SIZE), connectMode(IS_PENDING), connectionTime(0),
+                    : MTUSize(MAXIMUM_MTU_SIZE), connectMode(IS_PENDING), connectionTime(0), lastPingTime(0),
                       weStartedTheConnection(false) {}
         };
 

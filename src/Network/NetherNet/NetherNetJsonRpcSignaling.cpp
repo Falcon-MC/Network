@@ -393,8 +393,12 @@ namespace nethernet {
                 std::string rawParams;
                 std::vector<std::string> envelopes;
 
-                if (JsonText::findMember(message, "params", false, rawParams) &&
-                    JsonText::splitArray(rawParams, envelopes)) {
+                const bool found = JsonText::findMember(message, "params", false, rawParams);
+                const size_t first = found ? rawParams.find_first_not_of(" \t\r\n") : std::string::npos;
+
+                if (first != std::string::npos && rawParams[first] == '{') {
+                    _handleEnvelope(rawParams);
+                } else if (found && JsonText::splitArray(rawParams, envelopes)) {
                     for (const std::string &envelope: envelopes)
                         _handleEnvelope(envelope);
                 } else {
