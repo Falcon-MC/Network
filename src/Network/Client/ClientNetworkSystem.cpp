@@ -807,9 +807,8 @@ namespace {
                         return candidate.mPackId == entry.mPackId && candidate.mPackVersion == entry.mPackVersion;
                     });
                     if (offer == mOfferedPacks.end()) {
-                        if (mSkippedPacks) continue;
-                        outError = "server resource pack stack references an unavailable pack";
-                        return false;
+                        _trace("resource pack stack names unoffered pack " + entry.mPackId + " " + entry.mPackVersion);
+                        continue;
                     }
                     active.push_back(*offer);
                     active.back().mSubPackName = entry.mSubPackName;
