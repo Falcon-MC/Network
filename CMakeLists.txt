@@ -44,11 +44,24 @@ add_library(FalconNetwork STATIC ${FALCON_NETWORK_SOURCES})
 
 target_include_directories(FalconNetwork PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+if (NOT TARGET snappy)
+    set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(SNAPPY_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        snappy
+        GIT_REPOSITORY https://github.com/google/snappy.git
+        GIT_TAG 1.2.2
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(snappy)
+endif ()
+
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-target_link_libraries(FalconNetwork PUBLIC Threads::Threads FalconProtocol LibDataChannel::LibDataChannelStatic)
+target_link_libraries(FalconNetwork PUBLIC Threads::Threads FalconProtocol LibDataChannel::LibDataChannelStatic snappy)
 
 if (WIN32)
     target_link_libraries(FalconNetwork PUBLIC ws2_32 z ssl crypto crypt32)

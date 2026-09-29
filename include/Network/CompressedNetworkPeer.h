@@ -33,9 +33,13 @@ public:
     void flush() override;
 
 private:
-    static bool _compress(const std::string &input, std::string &outData);
+    static bool _compressZlib(const std::string &input, std::string &outData);
 
-    static bool _decompress(const char *data, size_t length, std::string &outData);
+    static bool _decompressZlib(const char *data, size_t length, std::string &outData);
+
+    static bool _compressSnappy(const std::string &input, std::string &outData);
+
+    static bool _decompressSnappy(const char *data, size_t length, std::string &outData);
 
     std::shared_ptr<NetworkPeer> mPeer;
     CompressionAlgorithm mAlgorithm;

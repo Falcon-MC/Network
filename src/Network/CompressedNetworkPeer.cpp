@@ -1,5 +1,6 @@
 #include "Network/CompressedNetworkPeer.h"
 
+#include <snappy.h>
 #include <zlib.h>
 
 namespace {
@@ -23,7 +24,7 @@ void CompressedNetworkPeer::disableCompression() {
     mCompressionEnabled = false;
 }
 
-bool CompressedNetworkPeer::_compress(const std::string &input, std::string &outData) {
+bool CompressedNetworkPeer::_compressZlib(const std::string &input, std::string &outData) {
     z_stream stream{};
 
     if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, RAW_DEFLATE_WINDOW_BITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
@@ -47,7 +48,7 @@ bool CompressedNetworkPeer::_compress(const std::string &input, std::string &out
     return true;
 }
 
-bool CompressedNetworkPeer::_decompress(const char *data, size_t length, std::string &outData) {
+bool CompressedNetworkPeer::_decompressZlib(const char *data, size_t length, std::string &outData) {
     z_stream stream{};
 
     if (inflateInit2(&stream, RAW_DEFLATE_WINDOW_BITS) != Z_OK)
@@ -84,6 +85,17 @@ bool CompressedNetworkPeer::_decompress(const char *data, size_t length, std::st
     return result == Z_STREAM_END;
 }
 
+bool CompressedNetworkPeer::_compressSnappy(const std::string &input, std::string &outData) {
+    return snappy::Compress(input.data(), input.size(), &outData) > 0;
+}
+
+bool CompressedNetworkPeer::_decompressSnappy(const char *data, size_t length, std::string &outData) {
+    size_t uncompressed = 0;
+    if (!snappy::GetUncompressedLength(data, length, &uncompressed) || uncompressed > MAX_DECOMPRESSED_SIZE)
+        return false;
+    return snappy::Uncompress(data, length, &outData);
+}
+
 void CompressedNetworkPeer::sendPacket(const std::string &data, Reliability reliability,
                                        Compressibility compressibility) {
     if (data.empty())
@@ -102,12 +114,15 @@ void CompressedNetworkPeer::sendPacket(const std::string &data, Reliability reli
     }
 
     const bool shouldCompress = compressibility == Compressibility::Compressible &&
-                                mAlgorithm == CompressionAlgorithm::ZLib &&
+                                (mAlgorithm == CompressionAlgorithm::ZLib || mAlgorithm == CompressionAlgorithm::Snappy) &&
                                 data.size() >= mCompressionThreshold;
 
     std::string compressed;
-    if (shouldCompress && _compress(data, compressed)) {
-        payload.push_back((char) CompressionAlgorithm::ZLib);
+    const bool packed = shouldCompress &&
+                        (mAlgorithm == CompressionAlgorithm::Snappy ? _compressSnappy(data, compressed)
+                                                                    : _compressZlib(data, compressed));
+    if (packed) {
+        payload.push_back((char) mAlgorithm);
         payload.append(compressed);
     } else {
         payload.push_back((char) CompressionAlgorithm::None);
@@ -149,13 +164,19 @@ NetworkPeer::DataStatus CompressedNetworkPeer::receivePacket(std::string &outDat
             return DataStatus::HasData;
         }
 
-        if (algorithm != CompressionAlgorithm::ZLib)
-            continue;
+        if (algorithm == CompressionAlgorithm::ZLib) {
+            if (!_decompressZlib(body, bodyLength, outData))
+                continue;
+            return DataStatus::HasData;
+        }
 
-        if (!_decompress(body, bodyLength, outData))
-            continue;
+        if (algorithm == CompressionAlgorithm::Snappy) {
+            if (!_decompressSnappy(body, bodyLength, outData))
+                continue;
+            return DataStatus::HasData;
+        }
 
-        return DataStatus::HasData;
+        continue;
     }
 }
 
