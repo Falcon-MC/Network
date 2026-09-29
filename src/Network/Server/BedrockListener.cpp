@@ -30,7 +30,7 @@ namespace {
 
     const int LISTENER_IDLE_WAIT_MS = 1;
     const char *GAME_MODE_NAME = "Survival";
-    const int GAME_MODE_ID = 1;
+    const int SERVER_AVAILABILITY = 1;
     const char *GAME_VERSION_KEY = "GameVersion";
     const char *NONCE_KEY = "Nonce";
 
@@ -111,7 +111,7 @@ bool BedrockListener::_addConnector(TransportLayer layer, std::string &outError)
         announcement.mSubName = settings.mSubName;
         announcement.mGameVersion = settings.mGameVersion;
         announcement.mGameMode = GAME_MODE_NAME;
-        announcement.mGameModeId = GAME_MODE_ID;
+        announcement.mServerAvailability = SERVER_AVAILABILITY;
         announcement.mProtocolVersion = settings.mProtocolVersion;
         announcement.mMaxPlayers = settings.mMaxPlayers;
         announcement.mPort = settings.mPort;
