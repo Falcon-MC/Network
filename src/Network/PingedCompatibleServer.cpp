@@ -21,11 +21,7 @@ static std::vector<std::string> splitAnnouncement(const std::string &raw) {
     return fields;
 }
 
-static int announcementGameModeId(const std::string &gameMode) {
-    if (gameMode == "Creative")
-        return 2;
-    if (gameMode == "Adventure")
-        return 3;
+static int announcementGameModeId(const std::string &) {
     return 1;
 }
 
