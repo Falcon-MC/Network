@@ -11,13 +11,13 @@ struct PingedCompatibleServer {
     unsigned short mPort;
     unsigned int mPing;
     int mProtocolVersion;
-    int mGameModeId;
+    int mServerAvailability;
     int mCurrentPlayers;
     int mMaxPlayers;
     unsigned long long mServerId;
 
     PingedCompatibleServer()
-            : mPort(0), mPing(0), mProtocolVersion(0), mGameModeId(0), mCurrentPlayers(0), mMaxPlayers(0),
+            : mPort(0), mPing(0), mProtocolVersion(0), mServerAvailability(1), mCurrentPlayers(0), mMaxPlayers(0),
               mServerId(0) {}
 
     std::string toAnnouncement(unsigned short portV4, unsigned short portV6) const;

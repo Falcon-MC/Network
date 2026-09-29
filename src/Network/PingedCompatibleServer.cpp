@@ -21,7 +21,7 @@ static std::vector<std::string> splitAnnouncement(const std::string &raw) {
     return fields;
 }
 
-static int announcementGameModeId(const std::string &) {
+static int serverAvailability() {
     return 1;
 }
 
@@ -34,7 +34,7 @@ std::string PingedCompatibleServer::toAnnouncement(unsigned short portV4, unsign
            std::to_string(mServerId) + ";" +
            mSubName + ";" +
            mGameMode + ";" +
-           std::to_string(announcementGameModeId(mGameMode)) + ";" +
+           std::to_string(serverAvailability()) + ";" +
            std::to_string(portV4) + ";" +
            std::to_string(portV6) + ";";
 }
@@ -58,7 +58,7 @@ bool PingedCompatibleServer::parse(const std::string &rawAnnouncement, PingedCom
     if (fields.size() > 8)
         outServer.mGameMode = fields[8];
     if (fields.size() > 9)
-        outServer.mGameModeId = atoi(fields[9].c_str());
+        outServer.mServerAvailability = atoi(fields[9].c_str());
     if (fields.size() > 10)
         outServer.mPort = (unsigned short) atoi(fields[10].c_str());
 
