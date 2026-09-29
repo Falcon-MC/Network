@@ -558,6 +558,10 @@ namespace {
 
             if (!_isExpected(id)) {
                 mDeferred.push_back(std::move(payload));
+                if (id == MinecraftPacketIds::Transfer && mStartGame != nullptr) {
+                    _trace("login Transfer before ItemRegistry; finishing so the client can follow it");
+                    mDone = true;
+                }
                 return true;
             }
 
@@ -629,7 +633,11 @@ namespace {
             if (algorithm == (int) CompressedNetworkPeer::CompressionAlgorithm::ZLib) {
                 mConnection.enableCompression(CompressedNetworkPeer::CompressionAlgorithm::ZLib,
                                               packet->mCompressionThreshold);
-            } else if (algorithm == COMPRESSION_NONE_ID) {
+            } else if (algorithm == (int) CompressedNetworkPeer::CompressionAlgorithm::Snappy) {
+                mConnection.enableCompression(CompressedNetworkPeer::CompressionAlgorithm::Snappy,
+                                              packet->mCompressionThreshold);
+            } else if (algorithm == COMPRESSION_NONE_ID
+                       || algorithm == (int) CompressedNetworkPeer::CompressionAlgorithm::None) {
                 mConnection.enableCompression(CompressedNetworkPeer::CompressionAlgorithm::None,
                                               packet->mCompressionThreshold);
             } else {
