@@ -26,6 +26,7 @@
 #include "Protocol/Packets/ResourcePackStackPacket.h"
 #include "Protocol/Packets/ResourcePacksInfoPacket.h"
 #include "Protocol/Packets/ServerToClientHandshakePacket.h"
+#include "Protocol/Packets/ServerboundLoadingScreenPacket.h"
 #include "Protocol/Packets/SetLocalPlayerAsInitializedPacket.h"
 #include "Protocol/Packets/StartGamePacket.h"
 
@@ -841,6 +842,10 @@ namespace {
             if (mStartGame == nullptr)
                 return false;
 
+            ServerboundLoadingScreenPacket loading;
+            loading.mType = ServerboundLoadingScreenPacket::Type::StartLoadingScreen;
+            mConnection.send(loading);
+
             _expect({MinecraftPacketIds::ItemRegistry});
             return true;
         }
@@ -894,6 +899,10 @@ namespace {
             mConnection.setSpawnReceived(true);
             mWaitingForSpawn = false;
             mGameDataReceived = false;
+
+            ServerboundLoadingScreenPacket loading;
+            loading.mType = ServerboundLoadingScreenPacket::Type::EndLoadingScreen;
+            mConnection.send(loading);
 
             SetLocalPlayerAsInitializedPacket initialized;
             initialized.mRuntimeActorId = mStartGame != nullptr ? mStartGame->mRuntimeActorId : 0;
