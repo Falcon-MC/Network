@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Network/Http/ServiceError.h"
 #include "Network/Session/SessionConnectionTarget.h"
 
 #include <atomic>
@@ -31,6 +32,7 @@ struct RealmDescription {
     bool mExpired = false;
     bool mExpiredTrial = false;
     bool mGracePeriod = false;
+    bool mMember = false;
     int mDaysLeft = 0;
     int mMaxPlayers = 0;
     int64_t mClubId = 0;
@@ -45,6 +47,19 @@ struct RealmAddress {
     bool toTarget(SessionConnectionTarget &outTarget, std::string &outError) const;
 };
 
+/**
+ * A membership invitation to someone else's Realm, waiting for the player to
+ * accept or decline it.
+ */
+struct RealmInvite {
+    std::string mInvitationId;
+    std::string mWorldName;
+    std::string mWorldDescription;
+    std::string mOwnerName;
+    std::string mOwnerUuid;
+    int64_t mDate = 0;
+};
+
 class RealmsService {
 public:
     explicit RealmsService(MinecraftAuthentication &authentication);
@@ -57,11 +72,24 @@ public:
         mCancel = cancel;
     }
 
+    /**
+     * What went wrong with the last call that failed, cleared by every call.
+     */
+    const ServiceError &getLastError() const {
+        return mLastError;
+    }
+
     bool requestRealms(std::vector<RealmDescription> &outRealms, std::string &outError);
 
     bool requestRealmByCode(const std::string &code, RealmDescription &outRealm, std::string &outError);
 
     bool acceptInviteCode(const std::string &code, RealmDescription &outRealm, std::string &outError);
+
+    bool requestPendingInvites(std::vector<RealmInvite> &outInvites, std::string &outError);
+
+    bool acceptInvite(const std::string &invitationId, std::string &outError);
+
+    bool rejectInvite(const std::string &invitationId, std::string &outError);
 
     bool requestOnlinePlayers(long long realmId, std::vector<RealmPlayer> &outPlayers, std::string &outError);
 
@@ -69,14 +97,26 @@ public:
                         RealmAddress &outAddress, std::string &outError);
 
     /**
-     * The invite code of a realm link, "realm/CODE" or a realms.gg address,
-     * with any query removed; empty when the text is not such a link.
+     * The invite code of a realm link: "realm/CODE", or a realms.gg address
+     * with or without its scheme, whose host is realms.gg itself and whose
+     * path is the code alone. Empty when the text is not such a link.
      */
     static std::string inviteCode(const std::string &text);
 
+    /**
+     * The invite code of a realm link, or of the code typed on its own when
+     * allowBareCode is set; surrounding spaces are ignored. Empty when the
+     * text is neither.
+     */
+    static std::string parseInvite(const std::string &text, bool allowBareCode);
+
+    static bool isValidInviteCode(const std::string &code);
+
 private:
-    bool _request(const std::string &method, const std::string &path, int &outStatus, std::string &outBody,
-                  std::string &outError);
+    bool _request(const std::string &method, const std::string &path, bool mutation, int &outStatus,
+                  std::string &outBody, std::string &outError);
+
+    bool _fail(int status, const std::string &body, std::string &outError);
 
     bool _cancelled() const;
 
@@ -84,4 +124,5 @@ private:
 
     MinecraftAuthentication &mAuthentication;
     const std::atomic<bool> *mCancel = nullptr;
+    ServiceError mLastError;
 };
