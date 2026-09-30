@@ -685,6 +685,11 @@ namespace {
 
             switch (packet->mStatus) {
                 case PlayStatusPacket::Status::LoginSuccess: {
+                    if (mLoginSuccessReceived) {
+                        _trace("login LoginSuccess repeated; ignored so the packs already agreed on stay");
+                        return true;
+                    }
+                    mLoginSuccessReceived = true;
                     ClientCacheStatusPacket cacheStatus;
                     cacheStatus.mSupported = mSettings.mEnableClientCache;
                     mConnection.send(cacheStatus);
@@ -913,6 +918,7 @@ namespace {
         bool mGameDataReceived;
         int mChunkRadius;
         bool mAwaitingDecision = false;
+        bool mLoginSuccessReceived = false;
         std::chrono::steady_clock::time_point mLastActivity;
         std::vector<PackDownload> mDownloads;
         bool mSkippedPacks = false;
