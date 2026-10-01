@@ -248,6 +248,7 @@ bool NetherNetClient::_negotiate(const std::string &networkID, unsigned int time
     mSubscribed = true;
 
     rtc::Configuration configuration;
+    configuration.mtu = nethernet::NETWORK_MTU;
     configuration.maxMessageSize = nethernet::MAX_MESSAGE_SIZE + 1;
     configuration.disableAutoNegotiation = true;
 
@@ -763,7 +764,7 @@ void NetherNetClient::runEvents() {
     if (failed) {
         LOG_WARN(LogAreaID::Network, "NetherNet connection %s closed: %s", mRemoteNetworkID.c_str(),
                  failure.c_str());
-        _markClosed(DisconnectFailReason::Timeout);
+        _markClosed(DisconnectFailReason::Disconnected);
         return;
     }
 

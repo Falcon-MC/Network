@@ -113,8 +113,9 @@ namespace RakNet {
         out->Write((uint16_t) ranges.size());
 
         for (size_t i = 0; i < ranges.size(); i++) {
+            // Each record starts with a whole byte, 1 for a single datagram and 0 for a range.
             const bool maxEqualToMin = ranges[i].minIndex.val == ranges[i].maxIndex.val;
-            out->Write(maxEqualToMin);
+            out->Write((unsigned char) (maxEqualToMin ? 1 : 0));
             out->Write(ranges[i].minIndex);
             if (!maxEqualToMin)
                 out->Write(ranges[i].maxIndex);
@@ -131,9 +132,10 @@ namespace RakNet {
             return false;
 
         for (uint16_t i = 0; i < count; i++) {
-            bool maxEqualToMin;
-            if (!in->Read(maxEqualToMin))
+            unsigned char recordType;
+            if (!in->Read(recordType))
                 return false;
+            const bool maxEqualToMin = recordType != 0;
 
             Range range;
             if (!in->Read(range.minIndex))
@@ -259,7 +261,7 @@ namespace RakNet {
             return nullptr;
 
         uint16_t dataBitLength;
-        if (!in->Read(dataBitLength) || dataBitLength == 0)
+        if (!in->Read(dataBitLength))
             return nullptr;
 
         InternalPacket *internalPacket = new InternalPacket();
@@ -301,7 +303,7 @@ namespace RakNet {
         const unsigned int dataByteLength = BITS_TO_BYTES(dataBitLength);
         internalPacket->data.resize(dataByteLength);
 
-        if (!in->Read((char *) internalPacket->data.data(), dataByteLength)) {
+        if (dataByteLength > 0 && !in->Read((char *) internalPacket->data.data(), dataByteLength)) {
             delete internalPacket;
             return nullptr;
         }

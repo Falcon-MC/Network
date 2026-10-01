@@ -30,7 +30,7 @@ namespace {
 
     const int LISTENER_IDLE_WAIT_MS = 1;
     const char *GAME_MODE_NAME = "Survival";
-    const int GAME_MODE_ID = 1;
+    const int SERVER_AVAILABILITY = 1;
     const char *GAME_VERSION_KEY = "GameVersion";
     const char *NONCE_KEY = "Nonce";
 
@@ -111,7 +111,7 @@ bool BedrockListener::_addConnector(TransportLayer layer, std::string &outError)
         announcement.mSubName = settings.mSubName;
         announcement.mGameVersion = settings.mGameVersion;
         announcement.mGameMode = GAME_MODE_NAME;
-        announcement.mGameModeId = GAME_MODE_ID;
+        announcement.mServerAvailability = SERVER_AVAILABILITY;
         announcement.mProtocolVersion = settings.mProtocolVersion;
         announcement.mMaxPlayers = settings.mMaxPlayers;
         announcement.mPort = settings.mPort;
@@ -320,6 +320,11 @@ void BedrockListener::_tickLogins() {
 
         connection.update();
 
+        if (mSettings.mDeferResourcePacks && login.mState == LoginState::WaitingResourcePacks) {
+            finished.push_back(entry.first);
+            continue;
+        }
+
         std::string payload;
         bool keep = true;
         while (keep && !connection.isClosed() && connection.receiveRaw(payload))
@@ -374,7 +379,7 @@ bool BedrockListener::_handleLoginPacket(PendingLogin &login, std::string payloa
         case LoginState::WaitingHandshake:
             if (id == MinecraftPacketIds::ClientToServerHandshake)
                 _completeLogin(login);
-            return true;
+            return !(mSettings.mDeferResourcePacks && login.mState == LoginState::WaitingResourcePacks);
 
         case LoginState::WaitingResourcePacks: {
             if (id != MinecraftPacketIds::ResourcePackClientResponse)
@@ -465,7 +470,7 @@ bool BedrockListener::_handleLogin(PendingLogin &login, std::string payload) {
 
     if (!mSettings.mEncryption) {
         _completeLogin(login);
-        return true;
+        return !mSettings.mDeferResourcePacks;
     }
 
     Jwt::Token token;
@@ -488,6 +493,12 @@ void BedrockListener::_completeLogin(PendingLogin &login) {
     PlayStatusPacket status;
     status.mStatus = PlayStatusPacket::Status::LoginSuccess;
     connection.send(status);
+
+    if (mSettings.mDeferResourcePacks) {
+        connection.flush();
+        login.mState = LoginState::WaitingResourcePacks;
+        return;
+    }
 
     ResourcePacksInfoPacket packs;
     packs.mForcedToAccept = false;

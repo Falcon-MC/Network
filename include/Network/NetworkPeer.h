@@ -40,4 +40,10 @@ public:
     virtual void flush() {}
 
     virtual bool usesGamePacketId() const { return true; }
+
+    /**
+     * Whether game packets are encrypted after the handshake on this
+     * transport; transports that already secure the link send them clear.
+     */
+    virtual bool encryptsGamePackets() const { return true; }
 };

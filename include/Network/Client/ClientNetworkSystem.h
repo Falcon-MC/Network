@@ -5,8 +5,11 @@
 #include "Network/NetworkEnums.h"
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 class MinecraftAuthentication;
 
@@ -30,6 +33,38 @@ struct NetherNetTarget {
     bool mDisableTrickleIce = false;
 };
 
+struct ResourcePackOffer {
+    std::string mPackId;
+    std::string mPackVersion;
+    uint64_t mPackSize = 0;
+    std::string mContentKey;
+    std::string mSubPackName;
+    std::string mCdnUrl;
+    bool mRequired = false;
+};
+
+struct DownloadedResourcePack {
+    ResourcePackOffer mOffer;
+    std::string mData;
+};
+
+enum class ResourcePackDecision : int {
+    Pending = 0,
+    Download = 1,
+    Skip = 2
+};
+
+struct ResourcePackCallbacks {
+    std::function<bool(const DownloadedResourcePack &, std::string &)> mValidate;
+    std::function<bool(const ResourcePackOffer &)> mIsCached;
+    std::function<void(const std::vector<ResourcePackOffer> &)> mOffer;
+    std::function<ResourcePackDecision()> mDecision;
+    std::function<void(uint64_t, uint64_t)> mProgress;
+    std::function<bool(MinecraftPacketIds, const std::string &, BedrockConnection &, std::string &)> mRelayPacket;
+    std::function<bool(BedrockConnection &, bool &, bool &, std::string &)> mRelayTick;
+    unsigned int mRelayTimeoutMs = 180000;
+};
+
 struct ClientConnectionSettings {
     std::string mHost;
     unsigned short mPort = 19132;
@@ -48,12 +83,19 @@ struct ClientConnectionSettings {
     TransportLayer mTransportLayer = TransportLayer::RakNet;
     NetherNetTarget mNetherNet;
     bool mDeferSpawn = false;
+    bool mDeferGameData = false;
+    ResourcePackCallbacks mResourcePacks;
+    std::function<void(MinecraftPacketIds)> mPacketObserver;
+    // May be called from the CDN worker; the receiver must be thread-safe.
+    std::function<void(const std::string &)> mDiagnostic;
 };
 
 struct ClientConnectionResult {
     std::unique_ptr<BedrockConnection> mConnection;
     ClientIdentityData mIdentity;
     ClientData mClientData;
+    std::vector<DownloadedResourcePack> mResourcePacks;
+    std::vector<ResourcePackOffer> mOfferedPacks;
     std::string mError;
 };
 

@@ -51,6 +51,9 @@ bool EncryptedNetworkPeer::enableEncryption(const EncryptionKey &key) {
     if (mEncryptCipher != nullptr)
         return false;
 
+    if (!mPeer->encryptsGamePackets())
+        return true;
+
     mSendDigest = EVP_MD_CTX_new();
     mReceiveDigest = EVP_MD_CTX_new();
     mEncryptCipher = createCipher(key);
@@ -108,6 +111,9 @@ NetworkPeer::DataStatus EncryptedNetworkPeer::receivePacket(std::string &outData
         return DataStatus::NoData;
     }
 
+    if (mReceiveCounter == 0)
+        return _receiveFirst(outData, offset);
+
     if (!applyKeyStream(mDecryptCipher, &outData[offset], outData.size() - offset)) {
         mFailed = true;
         return DataStatus::NoData;
@@ -122,6 +128,39 @@ NetworkPeer::DataStatus EncryptedNetworkPeer::receivePacket(std::string &outData
     }
 
     outData.resize(offset + payloadSize);
+    return DataStatus::HasData;
+}
+
+/**
+ * Some servers flush a packet already queued in plain text right after the
+ * handshake switched them to encryption. Until the first encrypted packet
+ * verifies, a packet whose checksum fails is delivered as plain text without
+ * consuming the key stream.
+ */
+NetworkPeer::DataStatus EncryptedNetworkPeer::_receiveFirst(std::string &outData, size_t offset) {
+    EVP_CIPHER_CTX *trial = EVP_CIPHER_CTX_new();
+    if (trial == nullptr || EVP_CIPHER_CTX_copy(trial, mDecryptCipher) != 1) {
+        EVP_CIPHER_CTX_free(trial);
+        mFailed = true;
+        return DataStatus::NoData;
+    }
+
+    std::string decrypted = outData;
+    const size_t payloadSize = decrypted.size() - offset - CHECKSUM_SIZE;
+    uint8_t expected[CHECKSUM_SIZE];
+    const bool valid = applyKeyStream(trial, &decrypted[offset], decrypted.size() - offset)
+                       && _checksum(mReceiveDigest, 0, decrypted.data() + offset, payloadSize, expected)
+                       && CRYPTO_memcmp(expected, decrypted.data() + offset + payloadSize, CHECKSUM_SIZE) == 0;
+    if (!valid) {
+        EVP_CIPHER_CTX_free(trial);
+        return DataStatus::HasData;
+    }
+
+    EVP_CIPHER_CTX_free(mDecryptCipher);
+    mDecryptCipher = trial;
+    mReceiveCounter = 1;
+    decrypted.resize(offset + payloadSize);
+    outData = std::move(decrypted);
     return DataStatus::HasData;
 }
 

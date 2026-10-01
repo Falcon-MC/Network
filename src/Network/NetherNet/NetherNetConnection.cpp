@@ -10,6 +10,14 @@ namespace nethernet {
 
     namespace {
         const size_t MAX_SEGMENTS = 256;
+        const size_t MAX_REASSEMBLED_SIZE = MAX_SEGMENTS * MAX_MESSAGE_SIZE;
+
+        /**
+         * How many whole packets wait for the reader before the data channel
+         * callback holds off, so a peer sending faster than the game reads
+         * is slowed down by the transport instead of filling memory.
+         */
+        const size_t MAX_INCOMING_PACKETS = 256;
     }
 
     Connection::Connection(const NetworkIdentifier &id, std::shared_ptr<rtc::PeerConnection> peerConnection)
@@ -109,9 +117,10 @@ namespace nethernet {
         }
 
         bool invalidSegments = false;
+        bool oversized = false;
 
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            std::unique_lock<std::mutex> lock(mMutex);
 
             if (mClosed)
                 return;
@@ -120,19 +129,29 @@ namespace nethernet {
 
             if (state.mSegments > 0 && (unsigned char) (state.mSegments - 1) != segments) {
                 invalidSegments = true;
+            } else if (state.mBuffer.size() + (size - 1) > MAX_REASSEMBLED_SIZE) {
+                oversized = true;
             } else {
                 state.mSegments = segments;
                 state.mBuffer.append((const char *) data + 1, size - 1);
 
                 if (segments == 0) {
-                    mIncoming.push_back(std::string());
-                    mIncoming.back().swap(state.mBuffer);
+                    std::string packet;
+                    packet.swap(state.mBuffer);
+                    mIncomingSpace.wait(lock, [this] {
+                        return mClosed || mIncoming.size() < MAX_INCOMING_PACKETS;
+                    });
+                    if (mClosed)
+                        return;
+                    mIncoming.push_back(std::move(packet));
                 }
             }
         }
 
         if (invalidSegments)
             _fail("invalid promised segments");
+        if (oversized)
+            _fail("reassembled message larger than the segment limit");
     }
 
     void Connection::sendPacket(const std::string &data, Reliability reliability, Compressibility compressibility) {
@@ -198,6 +217,7 @@ namespace nethernet {
 
         outData = std::move(mIncoming.front());
         mIncoming.pop_front();
+        mIncomingSpace.notify_one();
         return DataStatus::HasData;
     }
 
@@ -244,6 +264,7 @@ namespace nethernet {
                 return;
 
             mClosed = true;
+            mIncomingSpace.notify_all();
 
             for (int i = 0; i < (int) ChannelReliability::Count; i++) {
                 channels[i] = mChannels[i].mChannel;

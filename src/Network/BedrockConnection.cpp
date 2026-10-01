@@ -188,7 +188,9 @@ bool BedrockConnection::receiveRaw(std::string &outPayload) {
 
     for (;;) {
         if (mBatchedPeer->receivePacket(outPayload) != NetworkPeer::DataStatus::HasData) {
-            if (mEncryptedPeer->hasFailed())
+            if (mBatchedPeer->hasFailed())
+                close("malformed packet batch received");
+            else if (mEncryptedPeer->hasFailed())
                 close("invalid encrypted packet received");
             else if (mClientDriver != nullptr && !mClientDriver->isConnected())
                 close(toString(mClientDriver->getCloseReason()));
@@ -197,8 +199,10 @@ bool BedrockConnection::receiveRaw(std::string &outPayload) {
         }
 
         MinecraftPacketIds id;
-        if (!peekPacketId(outPayload, id))
-            continue;
+        if (!peekPacketId(outPayload, id)) {
+            close("malformed packet header received");
+            return false;
+        }
 
         if (id == MinecraftPacketIds::Disconnect) {
             _handleDisconnectPacket(std::move(outPayload));

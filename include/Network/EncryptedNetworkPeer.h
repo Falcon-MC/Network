@@ -45,6 +45,8 @@ public:
 private:
     bool _checksum(evp_md_ctx_st *digest, uint64_t counter, const char *data, size_t length, uint8_t out[8]);
 
+    DataStatus _receiveFirst(std::string &outData, size_t offset);
+
     std::shared_ptr<NetworkPeer> mPeer;
     EncryptionKey mKey{};
     evp_cipher_ctx_st *mEncryptCipher = nullptr;

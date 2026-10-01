@@ -5,12 +5,15 @@
 
 #include <rtc/rtc.hpp>
 
+#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 
 namespace nethernet {
+    // Network MTU including IP/UDP headers; SCTP handles message fragmentation.
+    inline constexpr size_t NETWORK_MTU = 1200;
     extern const size_t MAX_MESSAGE_SIZE;
     extern const char *RELIABLE_CHANNEL_LABEL;
     extern const char *UNRELIABLE_CHANNEL_LABEL;
@@ -34,6 +37,8 @@ namespace nethernet {
         NetworkStatus getNetworkStatus() const override;
 
         bool usesGamePacketId() const override { return false; }
+
+        bool encryptsGamePackets() const override { return false; }
 
         const NetworkIdentifier &getNetworkIdentifier() const { return mId; }
 
@@ -63,6 +68,7 @@ namespace nethernet {
         std::shared_ptr<rtc::PeerConnection> mPeerConnection;
 
         mutable std::mutex mMutex;
+        std::condition_variable mIncomingSpace;
         ChannelState mChannels[(int) ChannelReliability::Count];
         std::deque<std::string> mIncoming;
         std::mutex mWriteMutex;

@@ -5,7 +5,8 @@
 namespace RakNet {
 
     struct RNS2RecvStruct {
-        char data[MAXIMUM_MTU_SIZE];
+        // Receive both connection directions without truncating incoming datagrams.
+        char data[MAXIMUM_INCOMING_MTU_SIZE];
         int bytesRead;
         SystemAddress systemAddress;
         TimeUS timeRead;
