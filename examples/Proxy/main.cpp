@@ -16,7 +16,7 @@
 
 namespace {
 
-    const int PROTOCOL_VERSION = 2216;
+    const int PROTOCOL_VERSION = 2223;
     const char *GAME_VERSION = "1.26.60";
     const unsigned int JOIN_TIMEOUT_MS = 30000;
 
