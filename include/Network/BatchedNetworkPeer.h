@@ -4,6 +4,8 @@
 
 #include <deque>
 #include <memory>
+#include <vector>
+#include <utility>
 
 class BatchedNetworkPeer : public NetworkPeer {
 public:
@@ -19,8 +21,10 @@ public:
 
     void flush() override;
 
+    bool hasFailed() const { return mFailed; }
+
 private:
-    bool _unbatch(const std::string &batch);
+    bool _unbatch(std::string batch);
 
     std::shared_ptr<NetworkPeer> mPeer;
 
@@ -30,5 +34,8 @@ private:
     Reliability mBatchReliability;
     Compressibility mBatchCompressibility;
 
-    std::deque<std::string> mIncomingPackets;
+    std::string mIncomingBatch;
+    std::vector<std::pair<size_t, size_t>> mIncomingPackets;
+    size_t mIncomingIndex = 0;
+    bool mFailed = false;
 };

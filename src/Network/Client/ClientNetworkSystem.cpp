@@ -46,6 +46,9 @@ namespace {
     const int IDLE_WAIT_MS = 2;
     const int CDN_TIMEOUT_MS = 120000;
     const uint64_t MAX_PACK_SIZE = 512ull * 1024 * 1024;
+    const uint64_t MAX_STACK_SIZE = 512ull * 1024 * 1024;
+    const size_t MAX_PACK_COUNT = 32;
+    const size_t MAX_CDN_PACKET_BYTES = 64ull * 1024 * 1024;
     const int COMPRESSION_NONE_ID = 0xffff;
 
     std::string redirectUrl(const std::string &base, const std::string &location) {
@@ -165,6 +168,7 @@ namespace {
         bool _receivePending(std::string &payload) {
             if (mCdnPackets.empty()) return mConnection.receiveRaw(payload);
             payload = std::move(mCdnPackets.front());
+            mCdnPacketBytes -= payload.size();
             mCdnPackets.pop_front();
             return true;
         }
@@ -315,7 +319,7 @@ namespace {
                         int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
                         if (remaining <= 0 || cancelDownload.load()) break;
                         if (!HttpClient::get(url, {{"Accept-Encoding", "identity"}}, response, error, remaining,
-                                static_cast<size_t>((offer.mPackSize ? offer.mPackSize : MAX_PACK_SIZE) + 1024 * 1024), &cancelDownload,
+                                static_cast<size_t>(std::min<uint64_t>(offer.mPackSize ? offer.mPackSize : MAX_PACK_SIZE, MAX_STACK_SIZE - mAcquiredPackBytes) + 1024 * 1024), &cancelDownload,
                                 [&](size_t bytes) { mCdnReceived = offer.mPackSize ? std::min<uint64_t>(bytes, offer.mPackSize) : bytes; })) {
                             _trace("CDN request failed pack=" + offer.mPackId + " hop=" + std::to_string(hop) + " reason="
                                    + (error.rfind("unsupported URL", 0) == 0 ? std::string("unsupported URL scheme or format") : error));
@@ -338,8 +342,15 @@ namespace {
                     mConnection.update();
                     mConnection.flush();
                     std::string payload;
-                    while (mConnection.receiveRaw(payload))
+                    while (mConnection.receiveRaw(payload)) {
+                        if (payload.size() > MAX_CDN_PACKET_BYTES - mCdnPacketBytes) {
+                            mConnection.close("pending packets exceeded CDN memory budget");
+                            cancelDownload = true;
+                            break;
+                        }
+                        mCdnPacketBytes += payload.size();
                         mCdnPackets.push_back(std::move(payload));
+                    }
                     if (mConnection.isClosed() || (mSettings.mCancel && mSettings.mCancel->load()))
                         cancelDownload = true;
                     _reportProgress();
@@ -357,12 +368,14 @@ namespace {
                 mCdnPendingBytes -= offer.mPackSize;
                 mCdnReceived = 0;
                 std::string error;
+                if (pack.mData.size() > MAX_STACK_SIZE - mAcquiredPackBytes) { outError = "resource pack stack exceeds memory budget"; return false; }
                 if (pack.mData.empty() || (mSettings.mResourcePacks.mValidate && !mSettings.mResourcePacks.mValidate(pack, error))) {
                     _trace("CDN fallback to server chunks pack=" + offer.mPackId + " reason=" + (error.empty() ? "HTTP download failed or size mismatch" : error));
                     LOG_WARN(LogAreaID::Network, "CDN pack %s unavailable or invalid; requesting server chunks", offer.mPackId.c_str());
                     mDownloads.push_back({offer});
                 } else {
                     _trace("CDN validated pack=" + offer.mPackId);
+                    mAcquiredPackBytes += pack.mData.size();
                     mCompletedPacks.push_back(std::move(pack));
                 }
                 _reportProgress();
@@ -444,7 +457,10 @@ namespace {
             download->mStarted = true;
             download->mChunkSize = packet->mMaxChunkSize;
             download->mChunkCount = expectedChunks;
-            download->mData.assign((size_t) packet->mCompressedPackSize, '\0');
+            const uint64_t archiveBytes = static_cast<uint64_t>(packet->mCompressedPackSize);
+            if (archiveBytes > MAX_STACK_SIZE - mAcquiredPackBytes) { outError = "resource pack stack exceeds memory budget"; return false; }
+            mAcquiredPackBytes += archiveBytes;
+            download->mData.assign(static_cast<size_t>(archiveBytes), '\0');
 
             for (int64_t chunk = 0; chunk < std::min<int64_t>(download->mChunkCount, 16); ++chunk) {
                 ResourcePackChunkRequestPacket request;
@@ -756,7 +772,11 @@ namespace {
             mSkippedPacks = false;
             mDownloads.clear();
             mCdnDownloads.clear();
+            mCompletedPacks.clear();
+            mAcquiredPackBytes = 0;
 
+            if (packet->mResourcePackInfos.size() > MAX_PACK_COUNT) { outError = "resource pack count exceeds limit"; return false; }
+            uint64_t offeredBytes = 0;
             for (const ResourcePacksInfoPacket::Entry &entry: packet->mResourcePackInfos) {
                 ResourcePackOffer offer;
                 offer.mPackId = entry.mPackId.toString();
@@ -769,6 +789,9 @@ namespace {
                 _trace("pack offered id=" + offer.mPackId + " version=" + offer.mPackVersion + " bytes=" + std::to_string(offer.mPackSize)
                        + " cdn=" + (offer.mCdnUrl.empty() ? "no" : "yes") + " encrypted=" + (offer.mContentKey.empty() ? "no" : "yes"));
                 if (offer.mPackSize > MAX_PACK_SIZE) { outError = "resource pack exceeds 512 MiB limit"; return false; }
+                const uint64_t reservedBytes = offer.mPackSize;
+                if (reservedBytes > MAX_STACK_SIZE - offeredBytes) { outError = "resource pack stack exceeds memory budget"; return false; }
+                offeredBytes += reservedBytes;
                 mOfferedPacks.push_back(offer);
 
                 if (mSettings.mResourcePacks.mIsCached && mSettings.mResourcePacks.mIsCached(offer)) {
@@ -920,6 +943,8 @@ namespace {
         std::vector<MinecraftPacketIds> mExpected;
         std::vector<std::string> mDeferred;
         std::deque<std::string> mCdnPackets;
+        size_t mCdnPacketBytes = 0;
+        uint64_t mAcquiredPackBytes = 0;
         std::shared_ptr<StartGamePacket> mStartGame;
         std::shared_ptr<ItemRegistryPacket> mItemRegistry;
         bool mDone;
