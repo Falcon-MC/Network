@@ -3,10 +3,8 @@
 
 #include <chrono>
 
-#include <cstdio>
 #include <cstdlib>
 #include <random>
-#include <string>
 
 namespace RakNet {
 
@@ -873,7 +871,6 @@ namespace RakNet {
 
     void RakPeer::UpdateNetworkLoop() {
         RNS2RecvStruct recvStruct;
-        TimeMS lastDiagnosticTime = 0;
 
         while (!endThreads) {
             const TimeMS receiveStart = GetTimeMS();
@@ -904,14 +901,6 @@ namespace RakNet {
                 remoteSystem->reliabilityLayer.Update(&socket, remoteSystem->systemAddress, remoteSystem->MTUSize,
                                                       time);
 
-                if (time - lastDiagnosticTime >= 1000) {
-                    lastDiagnosticTime = time;
-                    if (FILE *diagnostic = std::fopen(std::getenv("TEMP") ? (std::string(std::getenv("TEMP")) + "/raknet_diag.txt").c_str() : "raknet_diag.txt", "a")) {
-                        std::fprintf(diagnostic, "%llu %s\n", (unsigned long long) time,
-                                     remoteSystem->reliabilityLayer.Diagnostics().c_str());
-                        std::fclose(diagnostic);
-                    }
-                }
 
                 if (remoteSystem->reliabilityLayer.IsDeadConnection()) {
                     if (remoteSystem->connectMode == IS_CONNECTED) {

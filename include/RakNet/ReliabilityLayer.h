@@ -8,7 +8,6 @@
 #include <map>
 #include <memory>
 #include <set>
-#include <string>
 #include <vector>
 
 namespace RakNet {
@@ -90,20 +89,6 @@ namespace RakNet {
         bool AreAcksWaiting() const { return !acknowledgements.IsEmpty(); }
 
         bool IsDeadConnection() const { return deadConnection; }
-
-        std::string Diagnostics() const;
-
-        unsigned long long diagDatagrams = 0;
-        unsigned long long diagDelivered = 0;
-        unsigned long long diagDuplicates = 0;
-        unsigned long long diagParseFailures = 0;
-        unsigned long long diagNaksSent = 0;
-        unsigned long long diagNaksReceived = 0;
-        unsigned long long diagResends = 0;
-        unsigned long long diagLateDatagrams = 0;
-        unsigned long long diagOrderedDropped = 0;
-        unsigned long long diagSplitDropped = 0;
-        std::string diagLastFailure;
 
         void KillConnection() { deadConnection = true; }
 
