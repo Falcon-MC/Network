@@ -5,6 +5,7 @@
 
 #include <rtc/rtc.hpp>
 
+#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,7 @@ namespace nethernet {
         std::shared_ptr<rtc::PeerConnection> mPeerConnection;
 
         mutable std::mutex mMutex;
+        std::condition_variable mIncomingSpace;
         ChannelState mChannels[(int) ChannelReliability::Count];
         std::deque<std::string> mIncoming;
         std::mutex mWriteMutex;

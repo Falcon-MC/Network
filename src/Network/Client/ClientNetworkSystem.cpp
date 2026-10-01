@@ -1195,7 +1195,6 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
             return result;
         }
     } else {
-        result.mClientData.mDeviceOS = ClientData::DEVICE_ANDROID;
         result.mClientData.mGameVersion = settings.mGameVersion;
 
         if (!ClientConnectionRequest::createOnline(authentication.mChainJson, authentication.mMultiplayerToken,
