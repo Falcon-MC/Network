@@ -65,6 +65,7 @@ struct ClientData {
     int mPlatformType = 0;
     int mGraphicsMode = 0;
     std::string mPartyId;
+    std::string mProfileHash;
     bool mIsPartyLeader = false;
     std::string mNonce;
 };

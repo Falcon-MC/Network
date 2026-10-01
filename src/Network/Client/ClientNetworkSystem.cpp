@@ -1,4 +1,6 @@
 #include "Network/Client/ClientNetworkSystem.h"
+#include "Core/Json/Json.h"
+#include "Protocol/Packets/PacketViolationWarningPacket.h"
 
 #include "Core/Debug/BedrockLog.h"
 #include "Network/Auth/MinecraftAuthentication.h"
@@ -114,10 +116,28 @@ namespace {
                     if (!_pollDecision(outError)) return false;
                 }
 
+                if (mRelayingPacks && mSettings.mResourcePacks.mRelayTick) {
+                    bool activity = false;
+                    bool completed = false;
+                    if (!mSettings.mResourcePacks.mRelayTick(mConnection, activity, completed, outError))
+                        return false;
+                    if (activity)
+                        mLastActivity = std::chrono::steady_clock::now();
+                    if (completed) {
+                        mRelayingPacks = false;
+                        _expect({MinecraftPacketIds::DimensionData, MinecraftPacketIds::StartGame});
+                        if (mSettings.mDeferGameData) {
+                            mDone = true;
+                            mConnection.flush();
+                            break;
+                        }
+                    }
+                }
+
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - mLastActivity).count();
 
-                if (elapsed >= (long long) mSettings.mTimeoutMs) {
+                if (elapsed >= (long long) (mRelayingPacks ? mSettings.mResourcePacks.mRelayTimeoutMs : mSettings.mTimeoutMs)) {
                     outError = "dial timed out after " + std::to_string(elapsed) + " ms; waiting for " + _expectedPackets();
                     _trace(outError + "; pending chunk packs=" + std::to_string(mDownloads.size()));
                     for (const auto &download : mDownloads)
@@ -437,7 +457,6 @@ namespace {
             reject(packet->mCompressedPackSize <= 0, "non-positive compressed size");
             reject(packet->mCompressedPackSize > 0 && uint64_t(packet->mCompressedPackSize) > MAX_PACK_SIZE, "compressed size exceeds 512 MiB");
             reject(expectedChunks > 1048576, "calculated chunk count exceeds limit");
-            reject(download->mOffer.mPackSize && download->mOffer.mPackSize != uint64_t(packet->mCompressedPackSize), "compressed size differs from offer");
             reject(!packet->mHash.empty() && packet->mHash.size() != SHA256_DIGEST_LENGTH, "hash length is not 32 bytes");
             if (!invalid.empty()) {
                 outError = "invalid resource pack chunk metadata: " + invalid;
@@ -573,6 +592,19 @@ namespace {
             if (mSettings.mPacketObserver)
                 mSettings.mPacketObserver(id);
 
+            if (id == MinecraftPacketIds::PacketViolationWarning) {
+                const auto warning = _decode<PacketViolationWarningPacket>(std::move(payload), outError);
+                if (!warning) return false;
+                const std::string reason = "server rejected packet " + std::to_string(warning->mPacketCauseId)
+                    + ": " + warning->mContext;
+                _trace(reason);
+                if (warning->mSeverity == PacketViolationSeverity::TerminatingConnection) {
+                    outError = reason;
+                    return false;
+                }
+                return true;
+            }
+
             if (!_isExpected(id)) {
                 mDeferred.push_back(std::move(payload));
                 if (id == MinecraftPacketIds::Transfer && mStartGame != nullptr) {
@@ -583,6 +615,19 @@ namespace {
             }
 
             bool handled = false;
+
+            if (mSettings.mResourcePacks.mRelayPacket &&
+                (id == MinecraftPacketIds::ResourcePacksInfo || id == MinecraftPacketIds::ResourcePackStack ||
+                 id == MinecraftPacketIds::ResourcePackDataInfo || id == MinecraftPacketIds::ResourcePackChunkData)) {
+                if (!mSettings.mResourcePacks.mRelayTick) {
+                    outError = "resource pack relay requires a tick handler";
+                    return false;
+                }
+                mRelayingPacks = true;
+                _expect({MinecraftPacketIds::ResourcePacksInfo, MinecraftPacketIds::ResourcePackStack,
+                         MinecraftPacketIds::ResourcePackDataInfo, MinecraftPacketIds::ResourcePackChunkData});
+                return mSettings.mResourcePacks.mRelayPacket(id, payload, mConnection, outError);
+            }
 
             switch (id) {
                 case MinecraftPacketIds::NetworkSettings:
@@ -646,6 +691,7 @@ namespace {
                 return false;
 
             const int algorithm = (int) packet->mCompressionAlgorithm;
+            _trace("compression algorithm=" + std::to_string(algorithm) + " threshold=" + std::to_string(packet->mCompressionThreshold));
 
             if (algorithm == (int) CompressedNetworkPeer::CompressionAlgorithm::ZLib) {
                 mConnection.enableCompression(CompressedNetworkPeer::CompressionAlgorithm::ZLib,
@@ -962,6 +1008,7 @@ namespace {
         std::vector<ResourcePackOffer> mCdnDownloads;
         std::vector<DownloadedResourcePack> mCompletedPacks;
         std::vector<ResourcePackOffer> mOfferedPacks;
+        bool mRelayingPacks = false;
     };
 
     const char *AUTHORIZATION_SERVICE_NAME = "auth";
@@ -1105,6 +1152,10 @@ namespace {
             options.mIdentityKey = key;
             options.mIdentityToken = token;
             options.mIdentityDomain = hostnameOf(authorizationUri);
+        } else if (!multiplayerToken.empty()) {
+            options.mIdentityKey = key;
+            options.mIdentityToken = multiplayerToken;
+            options.mIdentityDomain = "self";
         }
 
         std::shared_ptr<NetherNetClient> transport = std::make_shared<NetherNetClient>();
@@ -1148,8 +1199,36 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         result.mIdentity.mTitleId = authentication.mTitleId;
     }
 
+    const std::string serverAddress = settings.mTransportLayer == TransportLayer::NetherNet
+        ? settings.mNetherNet.mNetworkId : settings.mHost + ":" + std::to_string(settings.mPort);
+    ClientConnectionRequest::applyIdentityDefaults(result.mIdentity);
+    ClientConnectionRequest::applyClientDefaults(result.mClientData, serverAddress, result.mIdentity.mDisplayName,
+                                                 settings.mGameVersion);
+    std::string authJson;
+    std::string clientJwt;
+    if (!online) {
+        if (!settings.mKeepXboxIdentityData) {
+            result.mIdentity.mXuid.clear();
+            result.mIdentity.mTitleId.clear();
+        }
+        if (!ClientConnectionRequest::createOffline(result.mIdentity, result.mClientData, *key,
+                                                    settings.mLegacyAuthentication, authJson, clientJwt,
+                                                    result.mError))
+            return result;
+        if (!settings.mLegacyAuthentication) {
+            const auto request = json::parse(authJson);
+            const auto token = request ? request->get("Token") : nullptr;
+            if (token && token->isString()) authentication.mMultiplayerToken = token->mString;
+        }
+    } else {
+        result.mClientData.mGameVersion = settings.mGameVersion;
+        if (!ClientConnectionRequest::createOnline(authentication.mChainJson, authentication.mMultiplayerToken,
+                                                   result.mClientData, *key, settings.mLegacyAuthentication,
+                                                   authJson, clientJwt, result.mError))
+            return result;
+    }
+
     std::unique_ptr<BedrockConnection> connection;
-    std::string serverAddress;
 
     if (settings.mTransportLayer == TransportLayer::NetherNet) {
         std::shared_ptr<NetherNetClient> transport;
@@ -1158,7 +1237,6 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
 
         std::shared_ptr<ClientTransport> driver = transport;
         connection.reset(new BedrockConnection(BedrockConnection::Side::Client, transport->getPeer(), driver));
-        serverAddress = settings.mNetherNet.mNetworkId;
     } else {
         std::shared_ptr<RakNetClient> transport = std::make_shared<RakNetClient>();
         if (settings.mDiagnostic) settings.mDiagnostic("RakNet connect start timeout-ms=" + std::to_string(settings.mTimeoutMs) + " outgoing-mtu-cap=1200");
@@ -1170,40 +1248,9 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         if (settings.mDiagnostic) settings.mDiagnostic("RakNet connected; starting Bedrock login");
 
         connection.reset(new BedrockConnection(BedrockConnection::Side::Client, transport->getPeer(), transport));
-        serverAddress = settings.mHost + ":" + std::to_string(settings.mPort);
     }
 
     connection->setCodecContext(settings.mCodecContext);
-
-    ClientConnectionRequest::applyIdentityDefaults(result.mIdentity);
-    ClientConnectionRequest::applyClientDefaults(result.mClientData, serverAddress, result.mIdentity.mDisplayName,
-                                                 settings.mGameVersion);
-
-    std::string authJson;
-    std::string clientJwt;
-
-    if (!online) {
-        if (!settings.mKeepXboxIdentityData) {
-            result.mIdentity.mXuid.clear();
-            result.mIdentity.mTitleId.clear();
-        }
-
-        if (!ClientConnectionRequest::createOffline(result.mIdentity, result.mClientData, *key,
-                                                    settings.mLegacyAuthentication, authJson, clientJwt,
-                                                    result.mError)) {
-            connection->close(result.mError);
-            return result;
-        }
-    } else {
-        result.mClientData.mGameVersion = settings.mGameVersion;
-
-        if (!ClientConnectionRequest::createOnline(authentication.mChainJson, authentication.mMultiplayerToken,
-                                                   result.mClientData, *key, settings.mLegacyAuthentication,
-                                                   authJson, clientJwt, result.mError)) {
-            connection->close(result.mError);
-            return result;
-        }
-    }
 
     LoginSequence sequence(*connection, settings, *key, std::move(authJson), std::move(clientJwt));
 

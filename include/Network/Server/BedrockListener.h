@@ -49,6 +49,7 @@ struct ListenerSettings {
     MinecraftAuthentication *mAuthentication = nullptr;
     NetherNetSignalingType mOnlineSignaling = NetherNetSignalingType::JsonRpc;
     bool mPublishSession = true;
+    bool mDeferResourcePacks = false;
 };
 
 struct IncomingConnection {

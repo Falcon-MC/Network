@@ -764,7 +764,7 @@ void NetherNetClient::runEvents() {
     if (failed) {
         LOG_WARN(LogAreaID::Network, "NetherNet connection %s closed: %s", mRemoteNetworkID.c_str(),
                  failure.c_str());
-        _markClosed(DisconnectFailReason::Timeout);
+        _markClosed(DisconnectFailReason::Disconnected);
         return;
     }
 

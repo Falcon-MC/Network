@@ -74,7 +74,7 @@ void ClientConnectionRequest::applyIdentityDefaults(ClientIdentityData &identity
 
 void ClientConnectionRequest::applyClientDefaults(ClientData &data, const std::string &serverAddress,
                                                   const std::string &displayName, const std::string &gameVersion) {
-    data.mServerAddress = serverAddress;
+    if (data.mServerAddress.empty()) data.mServerAddress = serverAddress;
     data.mThirdPartyName = displayName;
 
     if (data.mDeviceOS == 0)
@@ -116,6 +116,8 @@ void ClientConnectionRequest::applyClientDefaults(ClientData &data, const std::s
 
     if (data.mSkinId.empty())
         data.mSkinId = AuthenticationUtils::generateUuid();
+
+    if (data.mArmSize.empty()) data.mArmSize = "wide";
 
     if (data.mSkinData.empty()) {
         std::string pixels;
@@ -190,6 +192,7 @@ std::string ClientConnectionRequest::toJson(const ClientData &data) {
     result += ",\"PlatformType\":" + std::to_string(data.mPlatformType);
     result += ",\"GraphicsMode\":" + std::to_string(data.mGraphicsMode);
     result += ",\"PartyId\":" + quoted(data.mPartyId);
+    result += ",\"ProfileHash\":" + quoted(data.mProfileHash);
     result += ",\"IsPartyLeader\":" + boolean(data.mIsPartyLeader);
 
     if (!data.mNonce.empty())
@@ -294,7 +297,6 @@ bool ClientConnectionRequest::createOffline(const ClientIdentityData &identity, 
             return false;
         }
 
-        tokens.push_back(std::string());
     }
 
     outAuthJson = encodeRequest(tokens, token, 2, legacy);

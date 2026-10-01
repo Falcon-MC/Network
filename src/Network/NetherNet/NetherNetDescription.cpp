@@ -324,6 +324,14 @@ namespace nethernet {
         sdp += "a=extmap-allow-mixed\r\n";
         sdp += "a=msid-semantic: WMS\r\n";
 
+        for (const Fingerprint &fingerprint: parameters.mFingerprints) {
+            sdp += "a=fingerprint:";
+            sdp += fingerprint.mAlgorithm;
+            sdp.push_back(' ');
+            sdp += fingerprint.mValue;
+            sdp += "\r\n";
+        }
+
         if (!parameters.mEncodedIdentity.empty()) {
             sdp += "a=identity:";
             sdp += parameters.mEncodedIdentity;
@@ -346,14 +354,6 @@ namespace nethernet {
         sdp += parameters.mPassword;
         sdp += "\r\n";
         sdp += "a=ice-options:trickle\r\n";
-
-        for (const Fingerprint &fingerprint: parameters.mFingerprints) {
-            sdp += "a=fingerprint:";
-            sdp += fingerprint.mAlgorithm;
-            sdp.push_back(' ');
-            sdp += fingerprint.mValue;
-            sdp += "\r\n";
-        }
 
         sdp += "a=setup:";
         sdp += parameters.mSetupRole;

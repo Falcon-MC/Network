@@ -60,6 +60,9 @@ struct ResourcePackCallbacks {
     std::function<void(const std::vector<ResourcePackOffer> &)> mOffer;
     std::function<ResourcePackDecision()> mDecision;
     std::function<void(uint64_t, uint64_t)> mProgress;
+    std::function<bool(MinecraftPacketIds, const std::string &, BedrockConnection &, std::string &)> mRelayPacket;
+    std::function<bool(BedrockConnection &, bool &, bool &, std::string &)> mRelayTick;
+    unsigned int mRelayTimeoutMs = 180000;
 };
 
 struct ClientConnectionSettings {
@@ -80,6 +83,7 @@ struct ClientConnectionSettings {
     TransportLayer mTransportLayer = TransportLayer::RakNet;
     NetherNetTarget mNetherNet;
     bool mDeferSpawn = false;
+    bool mDeferGameData = false;
     ResourcePackCallbacks mResourcePacks;
     std::function<void(MinecraftPacketIds)> mPacketObserver;
     // May be called from the CDN worker; the receiver must be thread-safe.
