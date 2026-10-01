@@ -261,7 +261,7 @@ namespace RakNet {
             return nullptr;
 
         uint16_t dataBitLength;
-        if (!in->Read(dataBitLength) || dataBitLength == 0)
+        if (!in->Read(dataBitLength))
             return nullptr;
 
         InternalPacket *internalPacket = new InternalPacket();
@@ -303,7 +303,7 @@ namespace RakNet {
         const unsigned int dataByteLength = BITS_TO_BYTES(dataBitLength);
         internalPacket->data.resize(dataByteLength);
 
-        if (!in->Read((char *) internalPacket->data.data(), dataByteLength)) {
+        if (dataByteLength > 0 && !in->Read((char *) internalPacket->data.data(), dataByteLength)) {
             delete internalPacket;
             return nullptr;
         }
@@ -448,6 +448,7 @@ namespace RakNet {
 
         naks.Serialize(&updateBitStream);
         naks.Clear();
+        diagNaksSent++;
 
         SendDatagram(socket, systemAddress, &updateBitStream);
     }
@@ -465,6 +466,7 @@ namespace RakNet {
             internalPacket->queuedForSend = true;
             internalPacket->nextActionTime = time + resendRTO;
             sendPacketSet[internalPacket->priority].push_front(internalPacket);
+            diagResends++;
         }
     }
 
@@ -584,6 +586,7 @@ namespace RakNet {
     }
 
     void ReliabilityLayer::HandleNegativeAcknowledgement(const RangeList &ranges) {
+        diagNaksReceived++;
         for (const RangeList::Range &range: ranges.GetRanges()) {
             for (uint32_t datagramNumber = range.minIndex.val; datagramNumber <= range.maxIndex.val; datagramNumber++) {
                 auto it = datagramHistory.find(datagramNumber);
@@ -611,6 +614,9 @@ namespace RakNet {
             expectedDatagramNumber = uint24_t(datagramNumber.val + 1);
             return;
         }
+
+        if (datagramNumber.val < expectedDatagramNumber.val)
+            diagLateDatagrams++;
 
         if (datagramNumber.val > expectedDatagramNumber.val) {
             for (uint32_t missing = expectedDatagramNumber.val; missing < datagramNumber.val; missing++)
@@ -661,11 +667,22 @@ namespace RakNet {
         }
 
         OnDatagramReceived(header.datagramNumber);
+        diagDatagrams++;
 
         while (in.GetNumberOfUnreadBits() > 0) {
             InternalPacket *internalPacket = CreateInternalPacketFromBitStream(&in, time);
-            if (!internalPacket)
+            if (!internalPacket) {
+                if (in.GetNumberOfUnreadBits() >= 8) {
+                    diagParseFailures++;
+                    static const char digits[] = "0123456789abcdef";
+                    diagLastFailure = "len " + std::to_string(length) + " unread bits " + std::to_string(in.GetNumberOfUnreadBits()) + " hex ";
+                    for (unsigned int i = 0; i < length && i < 96; i++) {
+                        diagLastFailure += digits[((unsigned char) buffer[i]) >> 4];
+                        diagLastFailure += digits[((unsigned char) buffer[i]) & 15];
+                    }
+                }
                 break;
+            }
 
             HandleReceivedPacket(internalPacket, time);
         }
@@ -676,6 +693,7 @@ namespace RakNet {
     void ReliabilityLayer::HandleReceivedPacket(InternalPacket *internalPacket, TimeMS time) {
         if (IsReliable(internalPacket->reliability) &&
             IsOlderPacketDuplicate(internalPacket->reliableMessageNumber)) {
+            diagDuplicates++;
             delete internalPacket;
             return;
         }
@@ -689,6 +707,7 @@ namespace RakNet {
             if (expectedIt == splitPacketExpectedCount.end())
                 splitPacketExpectedCount[id] = internalPacket->splitPacketCount;
             else if (expectedIt->second != internalPacket->splitPacketCount) {
+                diagSplitDropped++;
                 delete internalPacket;
                 return;
             }
@@ -728,6 +747,7 @@ namespace RakNet {
             const unsigned char channel = internalPacket->orderingChannel;
 
             if (internalPacket->orderingIndex.val < orderedReadIndex[channel].val) {
+                diagOrderedDropped++;
                 delete internalPacket;
                 return;
             }
@@ -807,6 +827,7 @@ namespace RakNet {
     }
 
     void ReliabilityLayer::PushToOutputQueue(InternalPacket *internalPacket) {
+        diagDelivered++;
         outputQueue.push_back(internalPacket);
     }
 
@@ -817,6 +838,34 @@ namespace RakNet {
         InternalPacket *internalPacket = outputQueue.front();
         outputQueue.pop_front();
         return internalPacket;
+    }
+
+    std::string ReliabilityLayer::Diagnostics() const {
+        size_t heaped = 0;
+        int blockedChannel = -1;
+        uint32_t blockedAt = 0;
+        uint32_t lowestHeld = 0;
+        for (int channel = 0; channel < NUMBER_OF_ORDERED_STREAMS; channel++) {
+            if (!orderingHeap[channel].empty()) {
+                heaped += orderingHeap[channel].size();
+                blockedChannel = channel;
+                blockedAt = orderedReadIndex[channel].val;
+                lowestHeld = orderingHeap[channel].begin()->first;
+            }
+        }
+        size_t fragments = 0;
+        for (const auto &entry: splitPacketChannelList)
+            fragments += entry.second.size();
+        return "dgrams " + std::to_string(diagDatagrams) + " delivered " + std::to_string(diagDelivered)
+            + " dup " + std::to_string(diagDuplicates) + " late " + std::to_string(diagLateDatagrams)
+            + " parsefail " + std::to_string(diagParseFailures) + " orddrop " + std::to_string(diagOrderedDropped)
+            + " splitdrop " + std::to_string(diagSplitDropped) + " naksent " + std::to_string(diagNaksSent)
+            + " nakrecv " + std::to_string(diagNaksReceived) + " resends " + std::to_string(diagResends)
+            + " heap " + std::to_string(heaped) + " blocked ch " + std::to_string(blockedChannel)
+            + " read " + std::to_string(blockedAt) + " lowestheld " + std::to_string(lowestHeld)
+            + " splits " + std::to_string(splitPacketChannelList.size()) + "/" + std::to_string(fragments)
+            + " resendbuf " + std::to_string(resendBuffer.size()) + " expectdg " + std::to_string(expectedDatagramNumber.val)
+            + " rto " + std::to_string(resendRTO) + (diagLastFailure.empty() ? "" : " lastfail " + diagLastFailure);
     }
 
 }

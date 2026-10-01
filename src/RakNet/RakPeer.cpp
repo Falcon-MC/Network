@@ -3,13 +3,23 @@
 
 #include <chrono>
 
+#include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <string>
 
 namespace RakNet {
 
     static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_OUTGOING_MTU_SIZE, MINIMUM_OUTGOING_MTU_SIZE};
     static const size_t CONNECTION_MTU_SIZE_COUNT = sizeof(CONNECTION_MTU_SIZES) / sizeof(CONNECTION_MTU_SIZES[0]);
+
+    /**
+     * How much the network loop reads before it acknowledges, resends and
+     * sends again, so a steady stream from the server cannot starve the acks
+     * and pings it waits for.
+     */
+    static const int MAX_DATAGRAMS_PER_UPDATE = 256;
+    static const TimeMS MAX_RECEIVE_MS_PER_UPDATE = 10;
 
     static uint64_t GenerateGUID() {
         std::random_device randomDevice;
@@ -863,10 +873,17 @@ namespace RakNet {
 
     void RakPeer::UpdateNetworkLoop() {
         RNS2RecvStruct recvStruct;
+        TimeMS lastDiagnosticTime = 0;
 
         while (!endThreads) {
-            while (socket.RecvFrom(&recvStruct, 5))
+            const TimeMS receiveStart = GetTimeMS();
+            int waitMs = 5;
+            for (int datagrams = 0; datagrams < MAX_DATAGRAMS_PER_UPDATE && socket.RecvFrom(&recvStruct, waitMs); ++datagrams) {
                 ProcessNetworkPacket(recvStruct, GetTimeMS());
+                waitMs = 0;
+                if (GetTimeMS() - receiveStart >= MAX_RECEIVE_MS_PER_UPDATE)
+                    break;
+            }
 
             const TimeMS time = GetTimeMS();
 
@@ -886,6 +903,15 @@ namespace RakNet {
                 }
                 remoteSystem->reliabilityLayer.Update(&socket, remoteSystem->systemAddress, remoteSystem->MTUSize,
                                                       time);
+
+                if (time - lastDiagnosticTime >= 1000) {
+                    lastDiagnosticTime = time;
+                    if (FILE *diagnostic = std::fopen(std::getenv("TEMP") ? (std::string(std::getenv("TEMP")) + "/raknet_diag.txt").c_str() : "raknet_diag.txt", "a")) {
+                        std::fprintf(diagnostic, "%llu %s\n", (unsigned long long) time,
+                                     remoteSystem->reliabilityLayer.Diagnostics().c_str());
+                        std::fclose(diagnostic);
+                    }
+                }
 
                 if (remoteSystem->reliabilityLayer.IsDeadConnection()) {
                     if (remoteSystem->connectMode == IS_CONNECTED) {
