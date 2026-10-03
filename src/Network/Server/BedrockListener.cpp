@@ -293,21 +293,51 @@ void BedrockListener::_updatePlayerCount() {
     }
     mPlayerCount.store(count);
 
-    if (mSessionHost == nullptr || count == mPublishedPlayerCount)
+    if (mSessionHost == nullptr)
+        return;
+
+    std::string serverName = mSettings.mServerName;
+    std::string subName = mSettings.mSubName;
+    int shownCount = count;
+    int maxPlayers = mSettings.mMaxPlayers;
+    {
+        std::lock_guard<std::mutex> guard(mAdvertisementMutex);
+        if (!mAdvertisedServerName.empty())
+            serverName = mAdvertisedServerName;
+        if (!mAdvertisedSubName.empty())
+            subName = mAdvertisedSubName;
+        if (mAdvertisedPlayerCount >= 0)
+            shownCount = mAdvertisedPlayerCount;
+        if (mAdvertisedMaxPlayers > 0)
+            maxPlayers = mAdvertisedMaxPlayers;
+    }
+
+    const bool changed = mAdvertisementChanged.exchange(false);
+    if (!changed && shownCount == mPublishedPlayerCount)
         return;
 
     HostedWorld world;
-    world.mWorldName = mSettings.mServerName;
-    world.mHostName = mSettings.mSubName;
+    world.mWorldName = serverName;
+    world.mHostName = subName;
     world.mVersion = mSettings.mGameVersion;
     world.mProtocol = mSettings.mProtocolVersion;
-    world.mMemberCount = count;
-    world.mMaxMemberCount = mSettings.mMaxPlayers;
+    world.mMemberCount = shownCount;
+    world.mMaxMemberCount = maxPlayers;
     world.mSignalingType = mSettings.mOnlineSignaling;
     world.mNetherNetId = mNetherNetId;
     world.mPlayerMessagingId = mPlayerMessagingId;
     mSessionHost->update(world);
-    mPublishedPlayerCount = count;
+    mPublishedPlayerCount = shownCount;
+}
+
+void BedrockListener::advertise(const std::string &serverName, const std::string &subName, int playerCount,
+                                int maxPlayers) {
+    std::lock_guard<std::mutex> guard(mAdvertisementMutex);
+    mAdvertisedServerName = serverName;
+    mAdvertisedSubName = subName;
+    mAdvertisedPlayerCount = playerCount;
+    mAdvertisedMaxPlayers = maxPlayers;
+    mAdvertisementChanged.store(true);
 }
 
 void BedrockListener::_tickLogins() {
