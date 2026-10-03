@@ -1,4 +1,5 @@
 #include "Network/Http/HttpClient.h"
+#include "Network/Http/TlsRoots.h"
 
 #ifdef _WIN32
 
@@ -158,32 +159,6 @@ namespace {
         }
 
         return setBlocking(descriptor, true);
-    }
-
-    void loadSystemRoots(SSL_CTX *context) {
-        SSL_CTX_set_default_verify_paths(context);
-
-#ifdef _WIN32
-        HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
-        if (store == nullptr)
-            return;
-
-        X509_STORE *x509Store = SSL_CTX_get_cert_store(context);
-        PCCERT_CONTEXT certificate = nullptr;
-
-        while ((certificate = CertEnumCertificatesInStore(store, certificate)) != nullptr) {
-            const unsigned char *encoded = certificate->pbCertEncoded;
-            X509 *x509 = d2i_X509(nullptr, &encoded, (long) certificate->cbCertEncoded);
-
-            if (x509 != nullptr) {
-                X509_STORE_add_cert(x509Store, x509);
-                X509_free(x509);
-            }
-        }
-
-        ERR_clear_error();
-        CertCloseStore(store, 0);
-#endif
     }
 
     bool isResponseComplete(const std::string &raw, size_t &chunkPosition) {
@@ -448,7 +423,7 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
 
         SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
         SSL_CTX_set_verify(context, SSL_VERIFY_PEER, nullptr);
-        loadSystemRoots(context);
+        TlsRoots::load(context);
 
         ssl = SSL_new(context);
         if (ssl == nullptr) {
