@@ -26,6 +26,11 @@ public:
 
     const SerializedSkin &getSkin() const { return mSkin; }
 
+    /**
+     * The decoded client data payload, as the JSON object the client signed.
+     */
+    const std::string &getClientData() const { return mClientData; }
+
     static std::string decodeBase64Url(const std::string &value);
 
     static std::string readJwtPayload(const std::string &jwt);
@@ -50,5 +55,6 @@ private:
     std::string mTitleId;
     int mBuildPlatform = -1;
     std::string mLanguageCode;
+    std::string mClientData;
     SerializedSkin mSkin;
 };

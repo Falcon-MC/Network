@@ -84,6 +84,14 @@ void RakNetInstance::_onNewIncomingConnection(const RakNet::Packet *packet) {
         mCallbacks->onNewIncomingConnection(id, peer);
 }
 
+bool RakNetInstance::closeConnection(const NetworkIdentifier &id) {
+    if (mRemotePeers.erase(id) == 0)
+        return false;
+
+    mRakPeer->CloseConnection(id.getGuid(), false);
+    return true;
+}
+
 void RakNetInstance::_onConnectionClosed(const RakNet::Packet *packet, DisconnectFailReason reason) {
     const NetworkIdentifier id = _createNetworkIdentifier(packet);
 

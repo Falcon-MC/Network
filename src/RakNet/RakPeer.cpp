@@ -215,6 +215,16 @@ namespace RakNet {
         return remoteSystem ? (int) remoteSystem->reliabilityLayer.GetAveragePing() : -1;
     }
 
+    int RakPeer::GetMTUSize(const AddressOrGUID systemIdentifier) {
+        std::lock_guard<std::mutex> guard(remoteSystemMutex);
+
+        RemoteSystemStruct *remoteSystem = systemIdentifier.rakNetGuid == UNASSIGNED_RAKNET_GUID
+                                           ? GetRemoteSystemFromSystemAddress(systemIdentifier.systemAddress)
+                                           : GetRemoteSystemFromGUID(systemIdentifier.rakNetGuid);
+
+        return remoteSystem ? remoteSystem->MTUSize : -1;
+    }
+
     void RakPeer::SetTimeoutTime(TimeMS timeMS, const SystemAddress target) {
         std::lock_guard<std::mutex> guard(remoteSystemMutex);
 

@@ -2,6 +2,7 @@
 
 #include "Network/NetworkEnums.h"
 
+#include <cstdint>
 #include <string>
 
 class NetworkPeer {
@@ -40,6 +41,12 @@ public:
     virtual void flush() {}
 
     virtual bool usesGamePacketId() const { return true; }
+
+    /**
+     * The datagram size negotiated with the remote system, or 0 when the
+     * transport has no such handshake.
+     */
+    virtual uint16_t getMtuSize() const { return 0; }
 
     /**
      * Whether game packets are encrypted after the handshake on this

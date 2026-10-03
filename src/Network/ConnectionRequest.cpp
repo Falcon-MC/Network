@@ -273,6 +273,7 @@ bool ConnectionRequest::parse(const std::string &authJwt, const std::string &cli
     }
 
     const std::string clientPayload = readJwtPayload(clientJwt);
+    mClientData = clientPayload;
     if (!clientPayload.empty()) {
         mDeviceId = findJsonString(clientPayload, "DeviceId");
         mTitleId = findJsonString(clientPayload, "TitleID");
