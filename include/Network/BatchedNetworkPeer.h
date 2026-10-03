@@ -26,6 +26,12 @@ public:
 private:
     bool _unbatch(std::string batch);
 
+    /**
+     * Hands the pending batch to the transport with its own reliability, so packets of different reliabilities
+     * never share a batch.
+     */
+    void _sendBatch();
+
     std::shared_ptr<NetworkPeer> mPeer;
 
     static const size_t MAX_BATCH_SIZE = 1024 * 1024;

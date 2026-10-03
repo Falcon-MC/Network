@@ -12,6 +12,9 @@ void BatchedNetworkPeer::sendPacket(const std::string &data, Reliability reliabi
     if (data.empty())
         return;
 
+    if (!mBatchBuffer.empty() && reliability != mBatchReliability)
+        _sendBatch();
+
     if (compressibility == Compressibility::Incompressible)
         mBatchCompressibility = Compressibility::Incompressible;
 
@@ -28,14 +31,18 @@ void BatchedNetworkPeer::sendPacket(const std::string &data, Reliability reliabi
 }
 
 void BatchedNetworkPeer::flush() {
-    if (!mBatchBuffer.empty()) {
-        mPeer->sendPacket(mBatchBuffer, mBatchReliability, mBatchCompressibility);
-
-        mBatchBuffer.clear();
-        mBatchCompressibility = Compressibility::Compressible;
-    }
-
+    _sendBatch();
     mPeer->flush();
+}
+
+void BatchedNetworkPeer::_sendBatch() {
+    if (mBatchBuffer.empty())
+        return;
+
+    mPeer->sendPacket(mBatchBuffer, mBatchReliability, mBatchCompressibility);
+
+    mBatchBuffer.clear();
+    mBatchCompressibility = Compressibility::Compressible;
 }
 
 bool BatchedNetworkPeer::_unbatch(std::string batch) {
