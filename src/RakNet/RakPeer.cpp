@@ -22,7 +22,7 @@ namespace RakNet {
     static uint64_t GenerateGUID() {
         std::random_device randomDevice;
         std::mt19937_64 generator(((uint64_t) randomDevice() << 32) ^ GetTimeUS());
-        return generator();
+        return generator() | 0x8000000000000000ULL;
     }
 
     RakPeerInterface *RakPeerInterface::GetInstance() {
