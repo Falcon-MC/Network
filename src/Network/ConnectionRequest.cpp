@@ -1,5 +1,7 @@
 #include "Network/ConnectionRequest.h"
 
+#include <openssl/evp.h>
+
 #include <cstdint>
 #include <vector>
 
@@ -245,10 +247,32 @@ std::string ConnectionRequest::findJsonString(const std::string &json, const std
     return std::string();
 }
 
+std::string ConnectionRequest::identityFromXuid(const std::string &xuid) {
+    const std::string name = "pocket-auth-1-xuid:" + xuid;
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    if (EVP_Digest(name.data(), name.size(), digest, &length, EVP_md5(), nullptr) != 1 || length < 16)
+        return std::string();
+
+    digest[6] = (unsigned char) ((digest[6] & 0x0f) | 0x30);
+    digest[8] = (unsigned char) ((digest[8] & 0x3f) | 0x80);
+
+    static const char hex[] = "0123456789abcdef";
+    std::string result;
+    for (int index = 0; index < 16; index++) {
+        if (index == 4 || index == 6 || index == 8 || index == 10)
+            result.push_back('-');
+        result.push_back(hex[digest[index] >> 4]);
+        result.push_back(hex[digest[index] & 0x0f]);
+    }
+    return result;
+}
+
 bool ConnectionRequest::parse(const std::string &authJwt, const std::string &clientJwt) {
     // the identity claims live in the last certificate of the chain
     size_t search = 0;
     std::string identityPayload;
+    std::string tokenPayload;
 
     for (;;) {
         const size_t start = authJwt.find("ey", search);
@@ -262,6 +286,8 @@ bool ConnectionRequest::parse(const std::string &authJwt, const std::string &cli
         const std::string payload = readJwtPayload(authJwt.substr(start, end - start));
         if (payload.find("extraData") != std::string::npos)
             identityPayload = payload;
+        else if (payload.find("\"xid\"") != std::string::npos)
+            tokenPayload = payload;
 
         search = end + 1;
     }
@@ -270,6 +296,18 @@ bool ConnectionRequest::parse(const std::string &authJwt, const std::string &cli
         mDisplayName = findJsonString(identityPayload, "displayName");
         mIdentity = findJsonString(identityPayload, "identity");
         mXuid = findJsonString(identityPayload, "XUID");
+    }
+
+    if (!tokenPayload.empty()) {
+        if (mXuid.empty())
+            mXuid = findJsonString(tokenPayload, "xid");
+        if (mDisplayName.empty())
+            mDisplayName = findJsonString(tokenPayload, "xname");
+        if (mIdentity.empty()) {
+            mIdentity = findJsonString(tokenPayload, "leguuid");
+            if (mIdentity.empty() && !mXuid.empty())
+                mIdentity = identityFromXuid(mXuid);
+        }
     }
 
     const std::string clientPayload = readJwtPayload(clientJwt);

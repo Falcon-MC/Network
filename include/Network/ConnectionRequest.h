@@ -37,6 +37,12 @@ public:
 
     static std::string findJsonString(const std::string &json, const std::string &key);
 
+    /**
+     * The UUID the game derives from an XUID when the login only carries a multiplayer token: a version 3 UUID
+     * over "pocket-auth-1-xuid:" followed by the XUID.
+     */
+    static std::string identityFromXuid(const std::string &xuid);
+
     static int findJsonInt(const std::string &json, const std::string &key, int fallback = 0);
 
     static bool findJsonBool(const std::string &json, const std::string &key, bool fallback = false);
