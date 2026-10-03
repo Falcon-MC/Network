@@ -46,6 +46,11 @@ public:
 
     bool isPublished() const { return mPublished.load(); }
 
+    /**
+     * How many attempts in a row to restore the session after it was lost have failed. Reset once one succeeds.
+     */
+    int getFailedRecoveries() const { return mFailedRecoveries.load(); }
+
 private:
     bool _authorize(std::string &outError);
 
@@ -73,6 +78,8 @@ private:
 
     bool _recover(std::string &outError);
 
+    bool _restore(std::string &outError);
+
     MinecraftAuthentication &mAuthentication;
     nethernet::XboxRtaClient mRta;
     std::string mXuid;
@@ -90,6 +97,7 @@ private:
     bool mWorldChanged;
     std::atomic<bool> mPublished;
     std::atomic<bool> mStopping;
+    std::atomic<int> mFailedRecoveries{0};
     std::thread mThread;
     mutable std::mutex mMutex;
     std::mutex mRequestMutex;

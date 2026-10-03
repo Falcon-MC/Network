@@ -56,6 +56,7 @@ struct IncomingConnection {
     std::unique_ptr<BedrockConnection> mConnection;
     ClientIdentityData mIdentity;
     std::string mLanguageCode;
+    int mDeviceOS = -1;
     std::string mGameVersion;
     std::string mAuthJwt;
     std::string mClientJwt;
@@ -87,6 +88,12 @@ public:
     bool isListening() const {
         return mRunning.load();
     }
+
+    /**
+     * Whether friends can still reach the listener: the NetherNet signaling is connected and the multiplayer
+     * session is published. outReason says what is missing otherwise.
+     */
+    bool isOnline(std::string &outReason) const;
 
     bool onValidateIncomingConnection(const NetworkIdentifier &id) override;
 

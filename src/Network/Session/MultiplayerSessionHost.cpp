@@ -436,6 +436,15 @@ bool MultiplayerSessionHost::_updateConnection(const std::string &connectionId, 
 }
 
 bool MultiplayerSessionHost::_recover(std::string &outError) {
+    if (_restore(outError)) {
+        mFailedRecoveries.store(0);
+        return true;
+    }
+    mFailedRecoveries.fetch_add(1);
+    return false;
+}
+
+bool MultiplayerSessionHost::_restore(std::string &outError) {
     mRta.close();
 
     std::string connectionId;
