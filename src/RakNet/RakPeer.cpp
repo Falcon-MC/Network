@@ -615,6 +615,26 @@ namespace RakNet {
                 if (!in.Read(mtuSize))
                     return false;
 
+                if (serverGuid == 0 || mtuSize < MINIMUM_MTU_SIZE || mtuSize > MAXIMUM_ETHERNET_MTU_SIZE) {
+                    {
+                        std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+
+                        bool known = false;
+                        for (const ConnectionAttempt &attempt: connectionAttempts) {
+                            if (attempt.systemAddress == systemAddress) {
+                                known = true;
+                                break;
+                            }
+                        }
+
+                        if (!known)
+                            return true;
+                    }
+
+                    SendOpenConnectionRequest2(systemAddress, mtuSize, security != 0, cookie);
+                    return true;
+                }
+
                 if (mtuSize < MINIMUM_OUTGOING_MTU_SIZE)
                     mtuSize = MINIMUM_OUTGOING_MTU_SIZE;
                 if (mtuSize > MAXIMUM_OUTGOING_MTU_SIZE)
