@@ -28,11 +28,22 @@ public:
 
     const SerializedSkin &getSkin() const { return mSkin; }
 
+    /**
+     * The decoded client data payload, as the JSON object the client signed.
+     */
+    const std::string &getClientData() const { return mClientData; }
+
     static std::string decodeBase64Url(const std::string &value);
 
     static std::string readJwtPayload(const std::string &jwt);
 
     static std::string findJsonString(const std::string &json, const std::string &key);
+
+    /**
+     * The UUID the game derives from an XUID when the login only carries a multiplayer token: a version 3 UUID
+     * over "pocket-auth-1-xuid:" followed by the XUID.
+     */
+    static std::string identityFromXuid(const std::string &xuid);
 
     static int findJsonInt(const std::string &json, const std::string &key, int fallback = 0);
 
@@ -53,5 +64,6 @@ private:
     std::string mTitleId;
     int mBuildPlatform = -1;
     std::string mLanguageCode;
+    std::string mClientData;
     SerializedSkin mSkin;
 };

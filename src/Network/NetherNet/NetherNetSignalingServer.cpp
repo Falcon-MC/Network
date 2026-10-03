@@ -25,10 +25,12 @@
 typedef SOCKET FalconSignalingSocket;
 #define FALCON_SIGNALING_INVALID_SOCKET INVALID_SOCKET
 #define FALCON_SIGNALING_CLOSE_SOCKET ::closesocket
+#define FALCON_SIGNALING_SHUTDOWN_BOTH SD_BOTH
 #else
 typedef int FalconSignalingSocket;
 #define FALCON_SIGNALING_INVALID_SOCKET (-1)
 #define FALCON_SIGNALING_CLOSE_SOCKET ::close
+#define FALCON_SIGNALING_SHUTDOWN_BOTH SHUT_RDWR
 #endif
 
 namespace nethernet {
@@ -237,6 +239,7 @@ namespace nethernet {
             return;
 
         if (mListener >= 0) {
+            ::shutdown((FalconSignalingSocket) mListener, FALCON_SIGNALING_SHUTDOWN_BOTH);
             FALCON_SIGNALING_CLOSE_SOCKET((FalconSignalingSocket) mListener);
             mListener = -1;
         }

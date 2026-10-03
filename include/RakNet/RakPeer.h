@@ -74,6 +74,8 @@ namespace RakNet {
 
         int GetAveragePing(const AddressOrGUID systemIdentifier) override;
 
+        int GetMTUSize(const AddressOrGUID systemIdentifier) override;
+
         void SetTimeoutTime(TimeMS timeMS, const SystemAddress target) override;
 
     private:

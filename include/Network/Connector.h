@@ -32,6 +32,12 @@ public:
 
     virtual std::shared_ptr<NetworkPeer> getPeerForUser(const NetworkIdentifier &id) = 0;
 
+    /**
+     * Drops one connection without notifying the remote system. Returns false when this connector does not
+     * own it.
+     */
+    virtual bool closeConnection(const NetworkIdentifier &) { return false; }
+
     virtual TransportLayer getNetworkType() const = 0;
 
     virtual bool isIPv4Supported() const = 0;

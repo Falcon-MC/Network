@@ -50,6 +50,8 @@ namespace RakNet {
 
         virtual int GetAveragePing(const AddressOrGUID systemIdentifier) = 0;
 
+        virtual int GetMTUSize(const AddressOrGUID systemIdentifier) = 0;
+
         virtual void SetTimeoutTime(TimeMS timeMS, const SystemAddress target) = 0;
 
         static RakPeerInterface *GetInstance();

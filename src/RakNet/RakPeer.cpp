@@ -22,7 +22,7 @@ namespace RakNet {
     static uint64_t GenerateGUID() {
         std::random_device randomDevice;
         std::mt19937_64 generator(((uint64_t) randomDevice() << 32) ^ GetTimeUS());
-        return generator();
+        return generator() | 0x8000000000000000ULL;
     }
 
     RakPeerInterface *RakPeerInterface::GetInstance() {
@@ -213,6 +213,16 @@ namespace RakNet {
                                            : GetRemoteSystemFromGUID(systemIdentifier.rakNetGuid);
 
         return remoteSystem ? (int) remoteSystem->reliabilityLayer.GetAveragePing() : -1;
+    }
+
+    int RakPeer::GetMTUSize(const AddressOrGUID systemIdentifier) {
+        std::lock_guard<std::mutex> guard(remoteSystemMutex);
+
+        RemoteSystemStruct *remoteSystem = systemIdentifier.rakNetGuid == UNASSIGNED_RAKNET_GUID
+                                           ? GetRemoteSystemFromSystemAddress(systemIdentifier.systemAddress)
+                                           : GetRemoteSystemFromGUID(systemIdentifier.rakNetGuid);
+
+        return remoteSystem ? remoteSystem->MTUSize : -1;
     }
 
     void RakPeer::SetTimeoutTime(TimeMS timeMS, const SystemAddress target) {
@@ -614,6 +624,26 @@ namespace RakNet {
 
                 if (!in.Read(mtuSize))
                     return false;
+
+                if (serverGuid == 0 || mtuSize < MINIMUM_MTU_SIZE || mtuSize > MAXIMUM_ETHERNET_MTU_SIZE) {
+                    {
+                        std::lock_guard<std::mutex> guard(connectionAttemptMutex);
+
+                        bool known = false;
+                        for (const ConnectionAttempt &attempt: connectionAttempts) {
+                            if (attempt.systemAddress == systemAddress) {
+                                known = true;
+                                break;
+                            }
+                        }
+
+                        if (!known)
+                            return true;
+                    }
+
+                    SendOpenConnectionRequest2(systemAddress, mtuSize, security != 0, cookie);
+                    return true;
+                }
 
                 if (mtuSize < MINIMUM_OUTGOING_MTU_SIZE)
                     mtuSize = MINIMUM_OUTGOING_MTU_SIZE;

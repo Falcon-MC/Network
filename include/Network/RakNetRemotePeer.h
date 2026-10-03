@@ -17,6 +17,8 @@ public:
 
     NetworkStatus getNetworkStatus() const override;
 
+    uint16_t getMtuSize() const override;
+
     const NetworkIdentifier &getNetworkIdentifier() const { return mId; }
 
     void onDataReceived(const unsigned char *data, unsigned int length);

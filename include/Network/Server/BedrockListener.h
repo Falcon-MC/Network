@@ -56,6 +56,7 @@ struct IncomingConnection {
     std::unique_ptr<BedrockConnection> mConnection;
     ClientIdentityData mIdentity;
     std::string mLanguageCode;
+    int mDeviceOS = -1;
     std::string mGameVersion;
     std::string mAuthJwt;
     std::string mClientJwt;
@@ -78,9 +79,21 @@ public:
 
     void close();
 
+    /**
+     * Replaces what the published multiplayer session shows to friends. A negative player count keeps showing
+     * the players connected to this listener.
+     */
+    void advertise(const std::string &serverName, const std::string &subName, int playerCount, int maxPlayers);
+
     bool isListening() const {
         return mRunning.load();
     }
+
+    /**
+     * Whether friends can still reach the listener: the NetherNet signaling is connected and the multiplayer
+     * session is published. outReason says what is missing otherwise.
+     */
+    bool isOnline(std::string &outReason) const;
 
     bool onValidateIncomingConnection(const NetworkIdentifier &id) override;
 
@@ -136,6 +149,12 @@ private:
     std::string mNetherNetId;
     std::string mPlayerMessagingId;
     int mPublishedPlayerCount = -1;
+    std::mutex mAdvertisementMutex;
+    std::string mAdvertisedServerName;
+    std::string mAdvertisedSubName;
+    int mAdvertisedPlayerCount = -1;
+    int mAdvertisedMaxPlayers = 0;
+    std::atomic<bool> mAdvertisementChanged{false};
     std::vector<std::unique_ptr<Connector>> mConnectors;
     std::thread mThread;
     std::atomic<bool> mRunning;

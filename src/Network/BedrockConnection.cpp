@@ -4,7 +4,7 @@
 #include "Core/Utility/ReadOnlyBinaryStream.h"
 #include "Network/Client/RakNetClient.h"
 #include "Network/Crypto/KeyPair.h"
-#include "Protocol/MinecraftPackets.h"
+#include "Protocol/Codec/ProtocolCodec.h"
 #include "Protocol/Packets/ChunkRadiusUpdatedPacket.h"
 #include "Protocol/Packets/DisconnectPacket.h"
 #include "Protocol/Packets/ItemRegistryPacket.h"
@@ -218,7 +218,8 @@ std::shared_ptr<Packet> BedrockConnection::decode(std::string payload) const {
     if (!peekPacketId(payload, id))
         return nullptr;
 
-    std::shared_ptr<Packet> packet = MinecraftPackets::createPacket(id);
+    const ProtocolCodec &codec = mCodecContext->getCodec();
+    std::shared_ptr<Packet> packet = codec.createPacket(id);
     if (packet == nullptr)
         return nullptr;
 
@@ -228,7 +229,7 @@ std::shared_ptr<Packet> BedrockConnection::decode(std::string payload) const {
 
     try {
         packet->readHeader(stream);
-        packet->read(stream, *mCodecContext);
+        codec.read(*packet, stream, *mCodecContext);
     } catch (const std::exception &exception) {
         std::lock_guard<std::mutex> guard(mReasonMutex);
         mLastDecodeError = exception.what();

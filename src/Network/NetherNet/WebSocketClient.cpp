@@ -12,6 +12,7 @@
 #endif
 
 #include "Core/Debug/BedrockLog.h"
+#include "Network/Http/TlsRoots.h"
 #include "Network/NetherNet/NetherNetIdentity.h"
 
 #include <openssl/err.h>
@@ -277,7 +278,7 @@ namespace nethernet {
 
         SSL_CTX_set_min_proto_version(mContext, TLS1_2_VERSION);
         SSL_CTX_set_verify(mContext, SSL_VERIFY_PEER, nullptr);
-        SSL_CTX_set_default_verify_paths(mContext);
+        TlsRoots::load(mContext);
 
         mSsl = SSL_new(mContext);
         if (mSsl == nullptr) {

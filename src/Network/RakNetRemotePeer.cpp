@@ -37,6 +37,14 @@ NetworkPeer::DataStatus RakNetRemotePeer::receivePacket(std::string &outData) {
     return DataStatus::HasData;
 }
 
+uint16_t RakNetRemotePeer::getMtuSize() const {
+    if (mRakPeer == nullptr)
+        return 0;
+
+    const int mtu = mRakPeer->GetMTUSize(mId.getGuid());
+    return mtu > 0 ? (uint16_t) mtu : 0;
+}
+
 NetworkPeer::NetworkStatus RakNetRemotePeer::getNetworkStatus() const {
     NetworkStatus status;
 

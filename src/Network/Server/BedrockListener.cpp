@@ -33,6 +33,7 @@ namespace {
     const int SERVER_AVAILABILITY = 1;
     const char *GAME_VERSION_KEY = "GameVersion";
     const char *NONCE_KEY = "Nonce";
+    const int MAX_FAILED_SESSION_RECOVERIES = 3;
 
 }
 
@@ -293,21 +294,81 @@ void BedrockListener::_updatePlayerCount() {
     }
     mPlayerCount.store(count);
 
-    if (mSessionHost == nullptr || count == mPublishedPlayerCount)
+    if (mSessionHost == nullptr)
+        return;
+
+    std::string serverName = mSettings.mServerName;
+    std::string subName = mSettings.mSubName;
+    int shownCount = count;
+    int maxPlayers = mSettings.mMaxPlayers;
+    {
+        std::lock_guard<std::mutex> guard(mAdvertisementMutex);
+        if (!mAdvertisedServerName.empty())
+            serverName = mAdvertisedServerName;
+        if (!mAdvertisedSubName.empty())
+            subName = mAdvertisedSubName;
+        if (mAdvertisedPlayerCount >= 0)
+            shownCount = mAdvertisedPlayerCount;
+        if (mAdvertisedMaxPlayers > 0)
+            maxPlayers = mAdvertisedMaxPlayers;
+    }
+
+    const bool changed = mAdvertisementChanged.exchange(false);
+    if (!changed && shownCount == mPublishedPlayerCount)
         return;
 
     HostedWorld world;
-    world.mWorldName = mSettings.mServerName;
-    world.mHostName = mSettings.mSubName;
+    world.mWorldName = serverName;
+    world.mHostName = subName;
     world.mVersion = mSettings.mGameVersion;
     world.mProtocol = mSettings.mProtocolVersion;
-    world.mMemberCount = count;
-    world.mMaxMemberCount = mSettings.mMaxPlayers;
+    world.mMemberCount = shownCount;
+    world.mMaxMemberCount = maxPlayers;
     world.mSignalingType = mSettings.mOnlineSignaling;
     world.mNetherNetId = mNetherNetId;
     world.mPlayerMessagingId = mPlayerMessagingId;
     mSessionHost->update(world);
-    mPublishedPlayerCount = count;
+    mPublishedPlayerCount = shownCount;
+}
+
+bool BedrockListener::isOnline(std::string &outReason) const {
+    if (!mRunning.load()) {
+        outReason = "the listener is not running";
+        return false;
+    }
+    if (!mSettings.mNetherNet || mSettings.mAuthentication == nullptr)
+        return true;
+
+    if (mSignaling == nullptr) {
+        outReason = "the NetherNet signaling is not connected";
+        return false;
+    }
+    if (mSignaling->isClosed()) {
+        outReason = "the NetherNet signaling closed: " + mSignaling->getCloseReason();
+        return false;
+    }
+    if (!mSettings.mPublishSession)
+        return true;
+
+    if (mSessionHost == nullptr || !mSessionHost->isPublished()) {
+        outReason = "the multiplayer session is not published";
+        return false;
+    }
+    if (mSessionHost->getFailedRecoveries() >= MAX_FAILED_SESSION_RECOVERIES) {
+        outReason = "the multiplayer session could not be restored";
+        return false;
+    }
+    return true;
+}
+
+void BedrockListener::advertise(const std::string &serverName, const std::string &subName, int playerCount,
+                                int maxPlayers) {
+    std::lock_guard<std::mutex> guard(mAdvertisementMutex);
+    mAdvertisedServerName = serverName;
+    mAdvertisedSubName = subName;
+    mAdvertisedPlayerCount = playerCount;
+    mAdvertisedMaxPlayers = maxPlayers;
+    mAdvertisementChanged.store(true);
 }
 
 void BedrockListener::_tickLogins() {
@@ -454,6 +515,7 @@ bool BedrockListener::_handleLogin(PendingLogin &login, std::string payload) {
     incoming.mIdentity.mXuid = request.getXuid();
     incoming.mIdentity.mTitleId = request.getTitleId();
     incoming.mLanguageCode = request.getLanguageCode();
+    incoming.mDeviceOS = request.getBuildPlatform();
     incoming.mGameVersion = ConnectionRequest::findJsonString(
             ConnectionRequest::readJwtPayload(packet->mClientJwt), GAME_VERSION_KEY);
     incoming.mAuthJwt = packet->mAuthJwt;

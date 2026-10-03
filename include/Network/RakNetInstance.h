@@ -22,6 +22,8 @@ public:
 
     std::shared_ptr<NetworkPeer> getPeerForUser(const NetworkIdentifier &id) override;
 
+    bool closeConnection(const NetworkIdentifier &id) override;
+
     TransportLayer getNetworkType() const override { return TransportLayer::RakNet; }
 
     bool isIPv4Supported() const override;
