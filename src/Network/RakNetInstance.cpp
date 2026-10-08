@@ -53,6 +53,10 @@ unsigned short RakNetInstance::getConnectedPeerCount() const {
     return (unsigned short) mRemotePeers.size();
 }
 
+unsigned short RakNetInstance::getBoundPort() const {
+    return mIsHosting ? mRakPeer->GetMyBoundAddress().GetPort() : 0;
+}
+
 void RakNetInstance::announceServer(const PingedCompatibleServer &announcement) {
     mServerLocator.announceServer(announcement, mConnectionDefinition.mPort, mConnectionDefinition.mPortV6);
 }

@@ -68,6 +68,8 @@ namespace RakNet {
 
         RakNetGUID GetMyGUID() const override { return myGuid; }
 
+        SystemAddress GetMyBoundAddress() const override { return socket.GetBoundAddress(); }
+
         SystemAddress GetSystemAddressFromGuid(const RakNetGUID input) const override;
 
         RakNetGUID GetGuidFromSystemAddress(const SystemAddress input) const override;
