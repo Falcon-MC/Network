@@ -477,6 +477,7 @@ namespace RakNet {
 
             DatagramHeaderFormat header;
             header.datagramNumber = sendDatagramNumber;
+            header.needsBAndAs = true;
             header.Serialize(&updateBitStream);
 
             DatagramHistoryEntry historyEntry;

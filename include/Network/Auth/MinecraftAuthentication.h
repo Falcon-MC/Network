@@ -17,6 +17,7 @@ struct MinecraftAuthenticationResult {
     std::string mIdentity;
     std::string mXuid;
     std::string mTitleId;
+    std::string mPlayFabId;
 };
 
 class MinecraftAuthentication {
