@@ -9,6 +9,7 @@
 #include <openssl/rand.h>
 
 #include <memory>
+#include <cstdio>
 #include <vector>
 
 namespace {
@@ -43,7 +44,7 @@ namespace {
     }
 
     std::string encodeRequest(const std::vector<std::string> &chain, const std::string &token,
-                              int authenticationType, bool legacy) {
+                              int authenticationType, bool legacy, bool tokenOnly = false) {
         std::string certificate = "{\"chain\":[";
 
         for (size_t index = 0; index < chain.size(); ++index) {
@@ -57,6 +58,9 @@ namespace {
 
         if (legacy)
             return certificate;
+
+        if (authenticationType == 0 && tokenOnly)
+            return "{\"AuthenticationType\":0,\"Token\":" + quoted(token) + "}";
 
         return "{\"Certificate\":" + quoted(certificate) + ",\"AuthenticationType\":" +
                std::to_string(authenticationType) + ",\"Token\":" + quoted(token) + "}";
@@ -242,7 +246,10 @@ bool ClientConnectionRequest::createOnline(const std::string &chainJson, const s
     for (const std::unique_ptr<json::Value> &entry: chain->mArray)
         tokens.push_back(entry->string());
 
-    outAuthJson = encodeRequest(tokens, multiplayerToken, 0, legacy);
+    int major = 0, minor = 0, patch = 0;
+    const bool tokenOnly = std::sscanf(data.mGameVersion.c_str(), "%d.%d.%d", &major, &minor, &patch) == 3
+        && (major > 1 || (major == 1 && (minor > 26 || (minor == 26 && patch >= 30))));
+    outAuthJson = encodeRequest(tokens, multiplayerToken, 0, legacy, tokenOnly);
     outClientJwt = Jwt::sign(toJson(data), key);
 
     if (outClientJwt.empty()) {

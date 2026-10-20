@@ -44,6 +44,8 @@ namespace RakNet {
 
         virtual RakNetGUID GetMyGUID() const = 0;
 
+        virtual SystemAddress GetMyBoundAddress() const = 0;
+
         virtual SystemAddress GetSystemAddressFromGuid(const RakNetGUID input) const = 0;
 
         virtual RakNetGUID GetGuidFromSystemAddress(const SystemAddress input) const = 0;

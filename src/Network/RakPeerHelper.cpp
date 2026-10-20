@@ -11,6 +11,10 @@ RakNet::StartupResult RakPeerHelper::peerStartup(RakNet::RakPeerInterface *rakPe
 
     RakNet::SocketDescriptor socketDescriptor(definition.mPort, "::");
     socketDescriptor.socketFamily = AF_INET6;
+    if (!definition.mIPv4Address.empty() && definition.mIPv4Address != ConnectionDefinition::ANY_IPV4_ADDRESS) {
+        socketDescriptor = RakNet::SocketDescriptor(definition.mPort, definition.mIPv4Address.c_str());
+        socketDescriptor.socketFamily = AF_INET;
+    }
 
     const unsigned int maxConnections = purpose == PeerPurpose::Server
                                         ? (unsigned int) definition.mMaxNumConnections

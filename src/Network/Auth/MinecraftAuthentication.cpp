@@ -375,8 +375,20 @@ bool MinecraftAuthentication::authenticate(const KeyPair &key, bool legacy, Mine
                                            std::string &outError) {
     outResult = MinecraftAuthenticationResult();
 
-    if (!legacy && !requestMultiplayerToken(key, outResult.mMultiplayerToken, outError))
-        return false;
+    if (!legacy) {
+        if (!requestMultiplayerToken(key, outResult.mMultiplayerToken, outError))
+            return false;
+
+        Jwt::Token token;
+        if (!Jwt::parse(outResult.mMultiplayerToken, token)) {
+            outError = "read multiplayer token: parse jwt failed";
+            return false;
+        }
+        const auto claims = json::parse(token.mPayloadJson);
+        const auto playFabId = claims != nullptr ? claims->get("mid") : nullptr;
+        if (playFabId != nullptr && playFabId->isString())
+            outResult.mPlayFabId = toLower(playFabId->string());
+    }
 
     if (!requestChain(key, outResult.mChainJson, outError)) {
         outError = "request Minecraft auth chain: " + outError;

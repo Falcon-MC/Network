@@ -1197,6 +1197,10 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         result.mIdentity.mIdentity = authentication.mIdentity;
         result.mIdentity.mXuid = authentication.mXuid;
         result.mIdentity.mTitleId = authentication.mTitleId;
+        if (!authentication.mPlayFabId.empty()) {
+            result.mIdentity.mPlayFabId = authentication.mPlayFabId;
+            result.mClientData.mPlayFabId = authentication.mPlayFabId;
+        }
     }
 
     const std::string serverAddress = settings.mTransportLayer == TransportLayer::NetherNet

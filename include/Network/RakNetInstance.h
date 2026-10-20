@@ -40,6 +40,11 @@ public:
 
     unsigned short getConnectedPeerCount() const;
 
+    /**
+     * The port the socket really listens on, which the system picks when the definition asked for port 0.
+     */
+    unsigned short getBoundPort() const;
+
 private:
     void _onNewIncomingConnection(const RakNet::Packet *packet);
 
