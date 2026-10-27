@@ -82,12 +82,13 @@ namespace nethernet {
             writeAll(descriptor, response);
         }
 
-        void writeJson(const Stream &descriptor, const std::string &json) {
+        void writeJson(const Stream &descriptor, const std::string &json, bool includeBody) {
             std::string response = "HTTP/1.1 200 OK\r\n";
             response += "Content-Type: application/json\r\n";
             response += "Content-Length: " + std::to_string(json.size()) + "\r\n";
             response += "Connection: close\r\n\r\n";
-            response += json;
+            if (includeBody)
+                response += json;
             writeAll(descriptor, response);
         }
 
@@ -352,9 +353,13 @@ namespace nethernet {
         if (query != std::string::npos)
             path = path.substr(0, query);
 
-        if (method == "GET" && path == "/v1/join") {
+        if (path.size() > 1 && path.back() == '/')
+            path.pop_back();
+
+        // HEAD probes get the status headers without the body.
+        if ((method == "GET" || method == "HEAD") && path == "/v1/join") {
             if (mStatusProvider)
-                writeJson(descriptor, mStatusProvider());
+                writeJson(descriptor, mStatusProvider(), method == "GET");
             else
                 writeText(descriptor, 200, "OK", std::string());
             return;
