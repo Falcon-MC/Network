@@ -10,6 +10,7 @@
 #include "Network/Crypto/KeyPair.h"
 #include "Network/Http/HttpClient.h"
 #include "Network/NetherNet/NetherNetDiscovery.h"
+#include "Network/NetherNet/NetherNetHttpSignaling.h"
 #include "Network/NetherNet/NetherNetJsonRpcSignaling.h"
 #include "Network/NetherNet/NetherNetWebSocketSignaling.h"
 #include "Protocol/Packets/ChunkRadiusUpdatedPacket.h"
@@ -1087,6 +1088,9 @@ namespace {
                 out = signaling;
                 return true;
             }
+            case NetherNetSignalingType::Http:
+                out = std::make_shared<nethernet::HttpSignaling>(settings.mHost, settings.mPort);
+                return true;
         }
 
         outError = "unknown NetherNet signaling type";
@@ -1097,8 +1101,12 @@ namespace {
                        const std::string &multiplayerToken, std::shared_ptr<NetherNetClient> &out,
                        std::string &outError) {
         const NetherNetTarget &target = settings.mNetherNet;
+        const bool http = target.mSignalingType == NetherNetSignalingType::Http;
+        // The HTTP endpoint is addressed by host and port, so the server's network ID is optional.
+        const std::string remoteId = http && target.mNetworkId.empty()
+                                     ? settings.mHost + ":" + std::to_string(settings.mPort) : target.mNetworkId;
 
-        if (target.mNetworkId.empty()) {
+        if (remoteId.empty()) {
             outError = "no NetherNet network ID to dial";
             return false;
         }
@@ -1160,7 +1168,7 @@ namespace {
 
         std::shared_ptr<NetherNetClient> transport = std::make_shared<NetherNetClient>();
 
-        if (!transport->connect(target.mNetworkId, signaling, options, settings.mTimeoutMs, settings.mCancel,
+        if (!transport->connect(remoteId, signaling, options, settings.mTimeoutMs, settings.mCancel,
                                 outError)) {
             if (owned)
                 signaling->close();
@@ -1203,7 +1211,9 @@ ClientConnectionResult ClientNetworkSystem::dial(const ClientConnectionSettings 
         }
     }
 
-    const std::string serverAddress = settings.mTransportLayer == TransportLayer::NetherNet
+    const bool netherNetById = settings.mTransportLayer == TransportLayer::NetherNet
+                               && settings.mNetherNet.mSignalingType != NetherNetSignalingType::Http;
+    const std::string serverAddress = netherNetById
         ? settings.mNetherNet.mNetworkId : settings.mHost + ":" + std::to_string(settings.mPort);
     ClientConnectionRequest::applyIdentityDefaults(result.mIdentity);
     ClientConnectionRequest::applyClientDefaults(result.mClientData, serverAddress, result.mIdentity.mDisplayName,

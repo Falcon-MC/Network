@@ -29,6 +29,8 @@ namespace nethernet {
 
         bool isSecure() const { return mSslContext != nullptr; }
 
+        unsigned short getBoundPort() const { return mBoundPort; }
+
         void setCertificate(const std::string &certificatePath, const std::string &privateKeyPath);
 
         void setStatusProvider(const StatusProvider &provider) {
@@ -54,5 +56,6 @@ namespace nethernet {
         std::string mCertificatePath;
         std::string mPrivateKeyPath;
         SSL_CTX *mSslContext;
+        unsigned short mBoundPort;
     };
 }

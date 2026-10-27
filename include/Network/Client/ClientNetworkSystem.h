@@ -22,7 +22,8 @@ namespace nethernet {
 enum class NetherNetSignalingType : int {
     Lan = 0,
     WebSocket = 1,
-    JsonRpc = 2
+    JsonRpc = 2,
+    Http = 3
 };
 
 struct NetherNetTarget {

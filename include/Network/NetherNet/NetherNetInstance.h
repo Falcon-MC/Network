@@ -50,6 +50,8 @@ public:
 
     uint64_t getNetworkId() const { return mNetworkId; }
 
+    unsigned short getBoundPort() const { return mSignaling.getBoundPort(); }
+
     void attachSignaling(const std::shared_ptr<nethernet::Signaling> &signaling);
 
 private:

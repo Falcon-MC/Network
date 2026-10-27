@@ -121,7 +121,7 @@ namespace nethernet {
 
     }
 
-    SignalingServer::SignalingServer() : mRunning(false), mListener(-1), mSslContext(nullptr) {
+    SignalingServer::SignalingServer() : mRunning(false), mListener(-1), mSslContext(nullptr), mBoundPort(0) {
     }
 
     SignalingServer::~SignalingServer() {
@@ -227,6 +227,14 @@ namespace nethernet {
 
         freeaddrinfo(result);
 
+        // Port 0 asks the system for a free port, so read back the one it picked.
+        sockaddr_in bound;
+        socklen_t boundLength = sizeof(bound);
+        if (getsockname(descriptor, (sockaddr *) &bound, &boundLength) == 0)
+            mBoundPort = ntohs(bound.sin_port);
+        else
+            mBoundPort = port;
+
         mHandler = handler;
         mListener = (long long) descriptor;
         mRunning.store(true);
@@ -243,6 +251,8 @@ namespace nethernet {
             FALCON_SIGNALING_CLOSE_SOCKET((FalconSignalingSocket) mListener);
             mListener = -1;
         }
+
+        mBoundPort = 0;
 
         if (mThread.joinable())
             mThread.join();
