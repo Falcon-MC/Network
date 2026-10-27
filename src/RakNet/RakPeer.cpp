@@ -5,10 +5,62 @@
 
 #include <cstdlib>
 #include <random>
+#ifndef _WIN32
+#include <ifaddrs.h>
+#include <net/if.h>
+#else
+#include <ws2tcpip.h>
+#endif
 
 namespace RakNet {
 
-    static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_OUTGOING_MTU_SIZE, MINIMUM_OUTGOING_MTU_SIZE};
+    static std::vector<SystemAddress> LocalAddresses(const SystemAddress &boundAddress) {
+        std::vector<SystemAddress> addresses;
+        const auto add = [&](const sockaddr *source) {
+            if (source == nullptr || (source->sa_family != AF_INET && source->sa_family != AF_INET6))
+                return;
+            if (source->sa_family == AF_INET6 && boundAddress.GetIPVersion() != 6)
+                return;
+            SystemAddress address;
+            memcpy(&address.addr4, source, source->sa_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
+            if ((source->sa_family == AF_INET && address.addr4.sin_addr.s_addr == INADDR_ANY)
+                || (source->sa_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&address.addr6.sin6_addr)))
+                return;
+            address.SetPort(boundAddress.GetPort());
+            if (address.IsUnassigned() || (address.GetIPVersion() == 4 && address.IsLoopback()))
+                return;
+            for (const auto &existing : addresses)
+                if (existing == address)
+                    return;
+            if (addresses.size() < MAXIMUM_NUMBER_OF_INTERNAL_IDS)
+                addresses.push_back(address);
+        };
+#ifndef _WIN32
+        ifaddrs *interfaces = nullptr;
+        if (getifaddrs(&interfaces) == 0) {
+            for (auto entry = interfaces; entry != nullptr; entry = entry->ifa_next)
+                if (entry->ifa_flags & IFF_UP)
+                    add(entry->ifa_addr);
+            freeifaddrs(interfaces);
+        }
+#else
+        char hostname[256] = {};
+        if (gethostname(hostname, sizeof(hostname)) == 0) {
+            addrinfo hints = {};
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_DGRAM;
+            addrinfo *result = nullptr;
+            if (getaddrinfo(hostname, nullptr, &hints, &result) == 0) {
+                for (auto entry = result; entry != nullptr; entry = entry->ai_next)
+                    add(entry->ai_addr);
+                freeaddrinfo(result);
+            }
+        }
+#endif
+        return addresses;
+    }
+
+    static const int CONNECTION_MTU_SIZES[] = {MAXIMUM_OUTGOING_MTU_SIZE, 1200, MINIMUM_OUTGOING_MTU_SIZE};
     static const size_t CONNECTION_MTU_SIZE_COUNT = sizeof(CONNECTION_MTU_SIZES) / sizeof(CONNECTION_MTU_SIZES[0]);
 
     /**
@@ -363,6 +415,12 @@ namespace RakNet {
         }
 
         connectionAttempts.push_back(attempt);
+        BitStream ping;
+        ping.Write((unsigned char) ID_UNCONNECTED_PING);
+        ping.Write((uint64_t) GetTimeMS());
+        ping.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
+        ping.Write(myGuid.g);
+        SendOfflineMessage(ping, systemAddress);
         return true;
     }
 
@@ -724,8 +782,9 @@ namespace RakNet {
                 out.Write((uint64_t) time);
                 out.Write((unsigned char) 0);
 
+                // ConnectionRequest must not consume the first ordered stream index.
                 SendImmediate(remoteSystem, (const char *) out.GetData(), out.GetNumberOfBytesUsed(),
-                              IMMEDIATE_PRIORITY, RELIABLE_ORDERED, 0, time);
+                              IMMEDIATE_PRIORITY, RELIABLE, 0, time);
                 return true;
             }
 
@@ -830,20 +889,40 @@ namespace RakNet {
                 if (!remoteSystem->weStartedTheConnection || remoteSystem->connectMode == IS_CONNECTED)
                     return true;
 
+                SystemAddress clientAddress;
+                uint16_t systemIndex;
+                if (!in.Read(clientAddress) || !in.Read(systemIndex))
+                    return true;
+
+                for (int i = 0; i < MAXIMUM_NUMBER_OF_INTERNAL_IDS && in.GetNumberOfUnreadBits() > 128; i++) {
+                    SystemAddress internalAddress;
+                    if (!in.Read(internalAddress))
+                        return true;
+                }
+
+                uint64_t requestTime;
+                uint64_t serverTime;
+                if (in.GetNumberOfUnreadBits() != 128 || !in.Read(requestTime) || !in.Read(serverTime))
+                    return true;
+
                 remoteSystem->connectMode = IS_CONNECTED;
 
                 BitStream out;
                 out.Write((unsigned char) ID_NEW_INCOMING_CONNECTION);
                 out.Write(remoteSystem->systemAddress);
 
+                const auto internalAddresses = LocalAddresses(socket.GetBoundAddress());
                 for (int i = 0; i < MAXIMUM_NUMBER_OF_INTERNAL_IDS; i++)
-                    out.Write(UNASSIGNED_SYSTEM_ADDRESS);
+                    out.Write(i < internalAddresses.size() ? internalAddresses[i] : UNASSIGNED_SYSTEM_ADDRESS);
 
-                out.Write((uint64_t) time);
+                // Some servers use this timestamp as a handshake nonce.
+                out.Write(serverTime);
                 out.Write((uint64_t) time);
 
                 SendImmediate(remoteSystem, (const char *) out.GetData(), out.GetNumberOfBytesUsed(),
                               IMMEDIATE_PRIORITY, RELIABLE_ORDERED, 0, time);
+
+                remoteSystem->lastPingTime = time - 500;
 
                 Packet *packet = AllocPacket(1, remoteSystem->systemAddress, remoteSystem->guid);
                 packet->data[0] = ID_CONNECTION_REQUEST_ACCEPTED;

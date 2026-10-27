@@ -10,7 +10,7 @@ if (NOT TARGET FalconProtocol)
     FetchContent_Declare(
         falcon_protocol
         GIT_REPOSITORY https://github.com/Falcon-MC/Protocol.git
-        GIT_TAG main
+        GIT_TAG 26.60
         GIT_SHALLOW TRUE
         GIT_PROGRESS TRUE
     )
@@ -73,4 +73,15 @@ option(FALCON_NETWORK_BUILD_EXAMPLES "Build the Falcon.Network examples" OFF)
 
 if (FALCON_NETWORK_BUILD_EXAMPLES)
     add_subdirectory(examples/Proxy)
+endif ()
+
+option(FALCON_NETWORK_BUILD_TESTS "Build the Falcon.Network regression tests" OFF)
+if (FALCON_NETWORK_BUILD_TESTS)
+    enable_testing()
+    add_executable(FalconClientConnectionRequestTest tests/ClientConnectionRequest.cpp)
+    target_link_libraries(FalconClientConnectionRequestTest PRIVATE FalconNetwork)
+    add_test(NAME client-login-request COMMAND FalconClientConnectionRequestTest)
+    add_executable(FalconRakNetHandshakeTest tests/RakNetHandshake.cpp)
+    target_link_libraries(FalconRakNetHandshakeTest PRIVATE FalconNetwork)
+    add_test(NAME raknet-handshake COMMAND FalconRakNetHandshakeTest)
 endif ()
