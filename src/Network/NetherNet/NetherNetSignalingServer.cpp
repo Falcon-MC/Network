@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #endif
@@ -44,6 +45,19 @@ namespace nethernet {
 
         const size_t MAX_SDP_BODY_SIZE = 1 << 20;
         const size_t MAX_HEADER_SIZE = 16 * 1024;
+        const int RECEIVE_TIMEOUT_SECONDS = 10;
+        const unsigned char TLS_HANDSHAKE_RECORD = 0x16;
+
+        void setReceiveTimeout(FalconSignalingSocket descriptor) {
+#ifdef _WIN32
+            const DWORD timeout = RECEIVE_TIMEOUT_SECONDS * 1000;
+#else
+            timeval timeout;
+            timeout.tv_sec = RECEIVE_TIMEOUT_SECONDS;
+            timeout.tv_usec = 0;
+#endif
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout, sizeof(timeout));
+        }
 
         typedef SignalingServer::Stream Stream;
 
@@ -284,7 +298,20 @@ namespace nethernet {
         descriptor.mDescriptor = socketDescriptor;
         descriptor.mSsl = nullptr;
 
-        if (mSslContext != nullptr) {
+        // Requests are served one at a time, so a client that never sends anything must not hold the loop.
+        setReceiveTimeout(socketDescriptor);
+
+        // The client opens with a TLS handshake and only retries in plaintext once that is refused, so
+        // the first byte tells the two apart. Without a certificate the handshake is closed right away.
+        char first = 0;
+        if (recv(socketDescriptor, &first, 1, MSG_PEEK) != 1)
+            return;
+
+        const bool tls = (unsigned char) first == TLS_HANDSHAKE_RECORD;
+        if (tls && mSslContext == nullptr)
+            return;
+
+        if (tls) {
             descriptor.mSsl = SSL_new(mSslContext);
 
             if (descriptor.mSsl == nullptr) {
