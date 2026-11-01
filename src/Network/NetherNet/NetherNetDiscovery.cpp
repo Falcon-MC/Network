@@ -282,6 +282,11 @@ namespace nethernet {
 
         int reuse = 1;
         setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, (const char *) &reuse, sizeof(reuse));
+#ifdef SO_REUSEPORT
+        // BSD and macOS only share a UDP port between sockets that all set SO_REUSEPORT, so without it a game client
+        // listening for LAN discovery on the same machine keeps the server from binding.
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEPORT, (const char *) &reuse, sizeof(reuse));
+#endif
 
         int broadcast = 1;
         setsockopt(descriptor, SOL_SOCKET, SO_BROADCAST, (const char *) &broadcast, sizeof(broadcast));
