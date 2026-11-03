@@ -1,3 +1,4 @@
+#include <string>
 #include "Network/NetherNet/NetherNetConnection.h"
 
 #include "Core/Debug/BedrockLog.h"
@@ -11,6 +12,8 @@ namespace nethernet {
     namespace {
         const size_t MAX_SEGMENTS = 256;
         const size_t MAX_REASSEMBLED_SIZE = MAX_SEGMENTS * MAX_MESSAGE_SIZE;
+        // Bytes a client may leave unread in the reliable channel before it is dropped.
+        const size_t MAX_BUFFERED_AMOUNT = 16 * 1024 * 1024;
 
         /**
          * How many whole packets wait for the reader before the data channel
@@ -182,31 +185,48 @@ namespace nethernet {
             return;
         }
 
-        std::lock_guard<std::mutex> lock(mWriteMutex);
-
-        size_t remaining = totalSegments - 1;
-        size_t offset = 0;
-
-        for (size_t index = 0; index < totalSegments; index++) {
-            size_t length = data.size() - offset;
-            if (length > MAX_MESSAGE_SIZE)
-                length = MAX_MESSAGE_SIZE;
-
-            std::string segment;
-            segment.reserve(length + 1);
-            segment.push_back((char) (unsigned char) remaining);
-            segment.append(data, offset, length);
-
-            if (!channel->send((const std::byte *) segment.data(), segment.size())) {
-                LOG_WARN(LogAreaID::Network, "NetherNet segment could not be queued for %s",
-                         mId.toString().c_str());
-            }
-
-            offset += length;
-
-            if (remaining > 0)
-                remaining--;
+        // A client that stops reading lets the SCTP queue grow without bound: drop it before that
+        // costs the whole server its memory.
+        if (channel->bufferedAmount() + data.size() > MAX_BUFFERED_AMOUNT) {
+            _fail("send queue over " + std::to_string(MAX_BUFFERED_AMOUNT) + " bytes, client is not reading");
+            return;
         }
+
+        std::string failure;
+        {
+            std::lock_guard<std::mutex> lock(mWriteMutex);
+
+            size_t remaining = totalSegments - 1;
+            size_t offset = 0;
+
+            try {
+                for (size_t index = 0; index < totalSegments; index++) {
+                    size_t length = data.size() - offset;
+                    if (length > MAX_MESSAGE_SIZE)
+                        length = MAX_MESSAGE_SIZE;
+
+                    std::string segment;
+                    segment.reserve(length + 1);
+                    segment.push_back((char) (unsigned char) remaining);
+                    segment.append(data, offset, length);
+
+                    // false only means the segment was queued behind earlier ones, not that it was lost.
+                    channel->send((const std::byte *) segment.data(), segment.size());
+
+                    offset += length;
+
+                    if (remaining > 0)
+                        remaining--;
+                }
+            } catch (const std::exception &exception) {
+                // libdatachannel throws when SCTP refuses the message (connection closing, transport
+                // error). Only this client is affected; the rest of a split message must not follow.
+                failure = exception.what();
+            }
+        }
+
+        if (!failure.empty())
+            _fail("data channel send failed: " + failure);
     }
 
     NetworkPeer::DataStatus Connection::receivePacket(std::string &outData) {
