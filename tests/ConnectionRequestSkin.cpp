@@ -1,8 +1,10 @@
 #include "Network/ConnectionRequest.h"
+#include "Core/Debug/BedrockLog.h"
+#include "Core/Debug/ContentLogEndPoint.h"
 
 #include <openssl/evp.h>
 
-#include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -21,6 +23,9 @@ namespace {
 }
 
 int main() {
+    BedrockLog::addEndPoint(std::make_shared<ContentLogEndPoint>(false));
+
+    int result = 0;
     try {
         const std::string clientData = "{\"SkinId\":\"fixture\",\"SkinImageWidth\":1,\"SkinImageHeight\":1,"
                                        "\"SkinData\":\"AAAA/w==\",\"ArmSize\":\"slim\",\"SkinColor\":\"#ffc89a7b\","
@@ -42,9 +47,13 @@ int main() {
         require(!skin.mPrimaryUser, "primary user flag set");
         require(skin.mProfileHash == "fixture-hash", "profile hash lost");
 
-        std::cout << "Login skin tests passed\n";
+        LOG_INFO(LogAreaID::Network, "Login skin tests passed");
     } catch (const std::exception &error) {
-        std::cout << "Login skin test failed: " << error.what() << '\n';
-        return 1;
+        LOG_ERROR(LogAreaID::Network, "Login skin test failed: %s", error.what());
+        result = 1;
     }
+
+    // the log endpoints write from a worker thread, so the result must be drained before the process exits
+    BedrockLog::flush();
+    return result;
 }
