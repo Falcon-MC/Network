@@ -66,6 +66,74 @@ namespace {
         return -1;
     }
 
+    int hexValue(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    // the client writes colours as unpadded ARGB hex, so "#0" is transparent black and "#b37b62" has no alpha
+    int32_t parseArgbColor(const std::string &value) {
+        size_t position = !value.empty() && value[0] == '#' ? 1 : 0;
+        if (position >= value.size() || value.size() - position > 8)
+            return 0;
+
+        uint32_t color = 0;
+        for (; position < value.size(); position++) {
+            const int digit = hexValue(value[position]);
+            if (digit < 0)
+                return 0;
+            color = (color << 4) | (uint32_t) digit;
+        }
+        return (int32_t) color;
+    }
+
+    std::vector<std::string> extractJsonArrayStrings(const std::string &json, const std::string &key) {
+        std::vector<std::string> values;
+
+        const std::string pattern = "\"" + key + "\"";
+        size_t position = json.find(pattern);
+        if (position == std::string::npos)
+            return values;
+
+        position = json.find('[', position + pattern.size());
+        if (position == std::string::npos)
+            return values;
+
+        bool inString = false;
+        std::string value;
+        for (size_t i = position + 1; i < json.size(); i++) {
+            const char c = json[i];
+
+            if (!inString) {
+                if (c == ']')
+                    break;
+                if (c == '"') {
+                    inString = true;
+                    value.clear();
+                }
+                continue;
+            }
+
+            if (c == '\\' && i + 1 < json.size()) {
+                value.push_back(json[i + 1]);
+                i++;
+                continue;
+            }
+
+            if (c == '"') {
+                values.push_back(value);
+                inString = false;
+                continue;
+            }
+
+            value.push_back(c);
+        }
+
+        return values;
+    }
+
     std::vector<std::string> extractJsonArrayObjects(const std::string &json, const std::string &key) {
         std::vector<std::string> objects;
 
@@ -378,10 +446,16 @@ void ConnectionRequest::parseSkin(const std::string &clientPayload) {
     skin.mCapeId = findJsonString(clientPayload, "CapeId");
     skin.mFullSkinId = findJsonString(clientPayload, "FullSkinId");
     skin.mArmsWide = findJsonString(clientPayload, "ArmSize") != "slim";
+    skin.mColorArgb = parseArgbColor(findJsonString(clientPayload, "SkinColor"));
 
     skin.mPremium = findJsonBool(clientPayload, "PremiumSkin");
     skin.mPersona = findJsonBool(clientPayload, "PersonaSkin");
     skin.mCapeOnClassic = findJsonBool(clientPayload, "CapeOnClassicSkin");
+    skin.mOverridingPlayerAppearance = findJsonBool(clientPayload, "OverrideSkin");
+    skin.mTrusted = findJsonBool(clientPayload, "TrustedSkin");
+    skin.mProfileHash = findJsonString(clientPayload, "ProfileHash");
+    // vanilla sends the server copy of a login skin with the primary user flag cleared
+    skin.mPrimaryUser = false;
 
     for (const std::string &object: extractJsonArrayObjects(clientPayload, "AnimatedImageData")) {
         SkinAnimationData animation;
@@ -408,6 +482,9 @@ void ConnectionRequest::parseSkin(const std::string &clientPayload) {
         PersonaPieceTintData tint;
         tint.mType = PERSONA_PIECE_TYPES[resolvePersonaPieceType(findJsonString(object, "PieceType"))].mSerializeName;
         tint.mColors.assign(4, 0);
+        const std::vector<std::string> colors = extractJsonArrayStrings(object, "Colors");
+        for (size_t i = 0; i < colors.size() && i < tint.mColors.size(); i++)
+            tint.mColors[i] = parseArgbColor(colors[i]);
         skin.mTintColors.push_back(tint);
     }
 
