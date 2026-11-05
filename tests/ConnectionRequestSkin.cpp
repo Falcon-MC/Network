@@ -44,7 +44,7 @@ int main() {
 
         std::cout << "Login skin tests passed\n";
     } catch (const std::exception &error) {
-        std::cerr << error.what() << '\n';
+        std::cout << "Login skin test failed: " << error.what() << '\n';
         return 1;
     }
 }
