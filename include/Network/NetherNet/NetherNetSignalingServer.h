@@ -4,6 +4,8 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <vector>
 
 typedef struct ssl_ctx_st SSL_CTX;
 
@@ -42,6 +44,8 @@ namespace nethernet {
 
         void _destroySslContext();
 
+        static const int MAX_CONCURRENT_CLIENTS = 64;
+
         void _acceptLoop();
 
         void _handleClient(long long descriptor);
@@ -51,6 +55,8 @@ namespace nethernet {
         OfferHandler mHandler;
         StatusProvider mStatusProvider;
         std::thread mThread;
+        // one detached thread per client so a slow or stalled client cannot hold back everyone else's negotiation
+        std::atomic<int> mActiveClients{0};
         std::atomic<bool> mRunning;
         long long mListener;
         std::string mCertificatePath;

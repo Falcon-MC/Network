@@ -19,8 +19,10 @@
 #include <openssl/ssl.h>
 
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #ifdef _WIN32
 typedef SOCKET FalconSignalingSocket;
@@ -46,6 +48,8 @@ namespace nethernet {
         const size_t MAX_SDP_BODY_SIZE = 1 << 20;
         const size_t MAX_HEADER_SIZE = 16 * 1024;
         const int RECEIVE_TIMEOUT_SECONDS = 10;
+        const int DRAIN_TIMEOUT_MS = 12000;
+        const int DRAIN_POLL_MS = 20;
         const unsigned char TLS_HANDSHAKE_RECORD = 0x16;
 
         void setReceiveTimeout(FalconSignalingSocket descriptor) {
@@ -272,6 +276,11 @@ namespace nethernet {
         if (mThread.joinable())
             mThread.join();
 
+        // the detached client threads use the SSL context, so wait for them to drain before it is destroyed.
+        // each is bounded by the receive timeout, so this cannot wait indefinitely.
+        for (int waited = 0; mActiveClients.load() > 0 && waited < DRAIN_TIMEOUT_MS; waited += DRAIN_POLL_MS)
+            std::this_thread::sleep_for(std::chrono::milliseconds(DRAIN_POLL_MS));
+
         _destroySslContext();
     }
 
@@ -286,8 +295,20 @@ namespace nethernet {
                 continue;
             }
 
-            _handleClient((long long) client);
-            FALCON_SIGNALING_CLOSE_SOCKET(client);
+            // one stalled client must not block the others, so each is served on its own detached thread. a cap
+            // keeps a flood of slow clients from spawning unbounded threads; past it the connection is dropped.
+            if (mActiveClients.load() >= MAX_CONCURRENT_CLIENTS) {
+                FALCON_SIGNALING_CLOSE_SOCKET(client);
+                continue;
+            }
+
+            mActiveClients.fetch_add(1);
+
+            std::thread([this, client]() {
+                _handleClient((long long) client);
+                FALCON_SIGNALING_CLOSE_SOCKET(client);
+                mActiveClients.fetch_sub(1);
+            }).detach();
         }
     }
 
