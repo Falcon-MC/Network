@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Network/Acme/AcmeManager.h"
 #include "Network/Connector.h"
 #include "Network/NetherNet/NetherNetConnection.h"
 #include "Network/NetherNet/NetherNetCredentials.h"
@@ -47,6 +48,16 @@ public:
         mExtraSignalingPort = port;
     }
 
+    // before host(): issues and renews the signaling certificate on its own thread
+    void enableAcme(const acme::ManagerSettings &settings) {
+        mAcmeSettings = settings;
+        mAcmeEnabled = true;
+    }
+
+    void disableAcme() {
+        mAcmeEnabled = false;
+    }
+
     bool isSignalingSecure() const {
         return mSignaling.isSecure();
     }
@@ -86,6 +97,10 @@ private:
     nethernet::SignalingServer mSignaling;
     nethernet::SignalingServer mExtraSignaling;
     unsigned short mExtraSignalingPort = 0;
+    acme::ManagerSettings mAcmeSettings;
+    bool mAcmeEnabled = false;
+    std::shared_ptr<acme::ChallengeStore> mAcmeChallenges;
+    std::unique_ptr<acme::Manager> mAcme;
     nethernet::DiscoveryListener mDiscovery;
     nethernet::Identity mIdentity;
     nethernet::Credentials mCredentials;

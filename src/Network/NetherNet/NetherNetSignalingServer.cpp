@@ -15,9 +15,12 @@
 #endif
 
 #include "Core/Debug/BedrockLog.h"
+#include "Network/Acme/AcmeChallengeStore.h"
 
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <cctype>
 #include <chrono>
@@ -97,6 +100,60 @@ namespace nethernet {
             drainPending(descriptor);
             send(descriptor, TLS_HANDSHAKE_FAILURE, (int) sizeof(TLS_HANDSHAKE_FAILURE), 0);
             shutdown(descriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
+        }
+
+        // ALPN wire form: length byte then name
+        const unsigned char ACME_TLS_PROTOCOL[] = {10, 'a', 'c', 'm', 'e', '-', 't', 'l', 's', '/', '1'};
+        const unsigned int ACME_TLS_PROTOCOL_LENGTH = 10;
+        const char *const ACME_HTTP_PREFIX = "/.well-known/acme-challenge/";
+        // SSL app data marks a session answering tls-alpn-01
+        char ACME_SESSION_MARK = 1;
+
+        bool offersAcmeProtocol(const unsigned char *list, size_t length) {
+            if (length < 2 || (size_t) ((list[0] << 8) | list[1]) != length - 2)
+                return false;
+
+            for (size_t position = 2; position < length;) {
+                const size_t size = list[position];
+                if (position + 1 + size > length)
+                    return false;
+                if (size == ACME_TLS_PROTOCOL_LENGTH
+                    && memcmp(list + position + 1, ACME_TLS_PROTOCOL + 1, ACME_TLS_PROTOCOL_LENGTH) == 0)
+                    return true;
+                position += 1 + size;
+            }
+
+            return false;
+        }
+
+        // server_name extension: list length, then type 0 (host name), name length, name
+        bool readServerName(const unsigned char *data, size_t length, std::string &outName) {
+            if (length < 5 || (size_t) ((data[0] << 8) | data[1]) != length - 2 || data[2] != 0)
+                return false;
+
+            const size_t nameLength = (size_t) ((data[3] << 8) | data[4]);
+            if (nameLength == 0 || 5 + nameLength > length)
+                return false;
+
+            outName.assign((const char *) data + 5, nameLength);
+            return true;
+        }
+
+        bool useChallengeCertificate(SSL *ssl, const std::string &certificatePem, const std::string &keyPem) {
+            BIO *certificateBio = BIO_new_mem_buf(certificatePem.data(), (int) certificatePem.size());
+            BIO *keyBio = BIO_new_mem_buf(keyPem.data(), (int) keyPem.size());
+            X509 *certificate = certificateBio != nullptr ? PEM_read_bio_X509(certificateBio, nullptr, nullptr,
+                                                                              nullptr) : nullptr;
+            EVP_PKEY *key = keyBio != nullptr ? PEM_read_bio_PrivateKey(keyBio, nullptr, nullptr, nullptr) : nullptr;
+
+            const bool used = certificate != nullptr && key != nullptr && SSL_use_certificate(ssl, certificate) == 1
+                              && SSL_use_PrivateKey(ssl, key) == 1;
+
+            X509_free(certificate);
+            EVP_PKEY_free(key);
+            BIO_free(certificateBio);
+            BIO_free(keyBio);
+            return used;
         }
 
         typedef SignalingServer::Stream Stream;
@@ -183,58 +240,158 @@ namespace nethernet {
         stop();
     }
 
+    // before certificate selection: a tls-alpn-01 hello gets the challenge certificate for its server name
+    int SignalingServer::_onClientHello(SSL *ssl, int *alert, void *argument) {
+        const SignalingServer *server = (const SignalingServer *) argument;
+        const unsigned char *protocols = nullptr;
+        size_t protocolsLength = 0;
+        const unsigned char *serverName = nullptr;
+        size_t serverNameLength = 0;
+
+        const bool acme = server->mChallenges != nullptr
+                          && SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_application_layer_protocol_negotiation,
+                                                       &protocols, &protocolsLength) == 1
+                          && offersAcmeProtocol(protocols, protocolsLength);
+        if (acme) {
+            std::string name;
+            std::string certificate;
+            std::string key;
+            if (SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_server_name, &serverName, &serverNameLength) == 1
+                && readServerName(serverName, serverNameLength, name)
+                && server->mChallenges->findTlsAlpn(name, certificate, key)
+                && useChallengeCertificate(ssl, certificate, key)) {
+                SSL_set_app_data(ssl, &ACME_SESSION_MARK);
+                return SSL_CLIENT_HELLO_SUCCESS;
+            }
+
+            *alert = SSL_AD_UNRECOGNIZED_NAME;
+            return SSL_CLIENT_HELLO_ERROR;
+        }
+
+        if (SSL_CTX_get0_certificate(SSL_get_SSL_CTX(ssl)) == nullptr) {
+            *alert = SSL_AD_HANDSHAKE_FAILURE;
+            return SSL_CLIENT_HELLO_ERROR;
+        }
+
+        return SSL_CLIENT_HELLO_SUCCESS;
+    }
+
+    // ALPN only for a tls-alpn-01 session; the game's https probe negotiates none
+    int SignalingServer::_onSelectProtocol(SSL *ssl, const unsigned char **out, unsigned char *outLength,
+                                           const unsigned char *in, unsigned int inLength, void *) {
+        if (SSL_get_app_data(ssl) != &ACME_SESSION_MARK)
+            return SSL_TLSEXT_ERR_NOACK;
+
+        unsigned char *selected = nullptr;
+        if (SSL_select_next_proto(&selected, outLength, ACME_TLS_PROTOCOL, sizeof(ACME_TLS_PROTOCOL), in, inLength)
+            != OPENSSL_NPN_NEGOTIATED)
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+
+        *out = selected;
+        return SSL_TLSEXT_ERR_OK;
+    }
+
     void SignalingServer::setCertificate(const std::string &certificatePath, const std::string &privateKeyPath) {
+        std::lock_guard<std::mutex> lock(mSslMutex);
         mCertificatePath = certificatePath;
         mPrivateKeyPath = privateKeyPath;
     }
 
-    bool SignalingServer::_createSslContext() {
-        if (mCertificatePath.empty() || mPrivateKeyPath.empty())
-            return false;
-
+    SSL_CTX *SignalingServer::_buildSslContext(const std::string &certificatePath,
+                                               const std::string &privateKeyPath) {
         SSL_CTX *context = SSL_CTX_new(TLS_server_method());
         if (context == nullptr) {
-            LOG_ERROR(LogAreaID::Network, "NetherNet signaling could not allocate a TLS context, "
-                                          "falling back to plaintext HTTP");
-            return false;
+            LOG_ERROR(LogAreaID::Network, "NetherNet signaling could not allocate a TLS context");
+            return nullptr;
         }
 
         SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
+        SSL_CTX_set_client_hello_cb(context, &SignalingServer::_onClientHello, this);
+        SSL_CTX_set_alpn_select_cb(context, &SignalingServer::_onSelectProtocol, this);
 
-        if (SSL_CTX_use_certificate_chain_file(context, mCertificatePath.c_str()) != 1) {
-            LOG_ERROR(LogAreaID::Network, "NetherNet signaling could not read the TLS certificate chain %s, "
-                                          "falling back to plaintext HTTP", mCertificatePath.c_str());
+        // a context without a certificate only answers tls-alpn-01 handshakes
+        if (certificatePath.empty() || privateKeyPath.empty())
+            return context;
+
+        const char *failure = nullptr;
+        if (SSL_CTX_use_certificate_chain_file(context, certificatePath.c_str()) != 1)
+            failure = "could not read the TLS certificate chain";
+        else if (SSL_CTX_use_PrivateKey_file(context, privateKeyPath.c_str(), SSL_FILETYPE_PEM) != 1)
+            failure = "could not read the TLS private key";
+        else if (SSL_CTX_check_private_key(context) != 1)
+            failure = "found a TLS private key that does not match the certificate";
+
+        if (failure != nullptr) {
+            LOG_ERROR(LogAreaID::Network, "NetherNet signaling %s (%s, %s)", failure, certificatePath.c_str(),
+                      privateKeyPath.c_str());
             ERR_clear_error();
             SSL_CTX_free(context);
-            return false;
+            return nullptr;
         }
 
-        if (SSL_CTX_use_PrivateKey_file(context, mPrivateKeyPath.c_str(), SSL_FILETYPE_PEM) != 1) {
-            LOG_ERROR(LogAreaID::Network, "NetherNet signaling could not read the TLS private key %s, "
-                                          "falling back to plaintext HTTP", mPrivateKeyPath.c_str());
-            ERR_clear_error();
-            SSL_CTX_free(context);
-            return false;
+        return context;
+    }
+
+    bool SignalingServer::_createSslContext() {
+        std::string certificatePath;
+        std::string privateKeyPath;
+        {
+            std::lock_guard<std::mutex> lock(mSslMutex);
+            certificatePath = mCertificatePath;
+            privateKeyPath = mPrivateKeyPath;
         }
 
-        if (SSL_CTX_check_private_key(context) != 1) {
-            LOG_ERROR(LogAreaID::Network, "The NetherNet TLS private key does not match the certificate, "
-                                          "falling back to plaintext HTTP");
-            ERR_clear_error();
-            SSL_CTX_free(context);
-            return false;
-        }
+        const bool wanted = !certificatePath.empty() && !privateKeyPath.empty();
+        SSL_CTX *context = wanted ? _buildSslContext(certificatePath, privateKeyPath) : nullptr;
+        if (wanted && context == nullptr)
+            LOG_ERROR(LogAreaID::Network, "NetherNet signaling falls back to plaintext HTTP");
 
+        if (context == nullptr && mChallenges != nullptr)
+            context = _buildSslContext(std::string(), std::string());
+
+        std::lock_guard<std::mutex> lock(mSslMutex);
         mSslContext = context;
+        mSecure.store(context != nullptr && SSL_CTX_get0_certificate(context) != nullptr);
+        return mSecure.load();
+    }
+
+    bool SignalingServer::reloadCertificate(const std::string &certificatePath, const std::string &privateKeyPath) {
+        SSL_CTX *context = _buildSslContext(certificatePath, privateKeyPath);
+        if (context == nullptr || SSL_CTX_get0_certificate(context) == nullptr) {
+            SSL_CTX_free(context);
+            return false;
+        }
+
+        SSL_CTX *previous = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mSslMutex);
+            mCertificatePath = certificatePath;
+            mPrivateKeyPath = privateKeyPath;
+            // not running: start() builds its own context from the paths
+            if (!mRunning.load()) {
+                SSL_CTX_free(context);
+                return true;
+            }
+            previous = mSslContext;
+            mSslContext = context;
+            mSecure.store(true);
+        }
+
+        // sessions hold a reference: freeing here only drops ours
+        SSL_CTX_free(previous);
         return true;
     }
 
-    void SignalingServer::_destroySslContext() {
-        if (mSslContext == nullptr)
-            return;
+    SSL *SignalingServer::_newSession() {
+        std::lock_guard<std::mutex> lock(mSslMutex);
+        return mSslContext != nullptr ? SSL_new(mSslContext) : nullptr;
+    }
 
+    void SignalingServer::_destroySslContext() {
+        std::lock_guard<std::mutex> lock(mSslMutex);
         SSL_CTX_free(mSslContext);
         mSslContext = nullptr;
+        mSecure.store(false);
     }
 
     bool SignalingServer::start(const std::string &address, unsigned short port, const OfferHandler &handler) {
@@ -408,17 +565,12 @@ namespace nethernet {
             return;
 
         const bool tls = (unsigned char) first == TLS_HANDSHAKE_RECORD;
-        if (tls && mSslContext == nullptr) {
-            refuseTls(socketDescriptor);
-            return;
-        }
-
         if (tls) {
-            descriptor.mSsl = SSL_new(mSslContext);
+            descriptor.mSsl = _newSession();
 
             if (descriptor.mSsl == nullptr) {
-                LOG_WARN(LogAreaID::Network, "NetherNet signaling could not allocate a TLS session");
                 ERR_clear_error();
+                refuseTls(socketDescriptor);
                 return;
             }
 
@@ -426,6 +578,17 @@ namespace nethernet {
 
             if (SSL_accept(descriptor.mSsl) != 1) {
                 ERR_clear_error();
+                SSL_free(descriptor.mSsl);
+                return;
+            }
+
+            // RFC 8737: the handshake itself is the answer, no request follows
+            const unsigned char *protocol = nullptr;
+            unsigned int protocolLength = 0;
+            SSL_get0_alpn_selected(descriptor.mSsl, &protocol, &protocolLength);
+            if (protocolLength == ACME_TLS_PROTOCOL_LENGTH
+                && memcmp(protocol, ACME_TLS_PROTOCOL + 1, ACME_TLS_PROTOCOL_LENGTH) == 0) {
+                SSL_shutdown(descriptor.mSsl);
                 SSL_free(descriptor.mSsl);
                 return;
             }
@@ -484,6 +647,15 @@ namespace nethernet {
 
         if (path.size() > 1 && path.back() == '/')
             path.pop_back();
+
+        if (mChallenges != nullptr && (method == "GET" || method == "HEAD") && path.rfind(ACME_HTTP_PREFIX, 0) == 0) {
+            std::string keyAuthorization;
+            if (mChallenges->findHttp(path.substr(strlen(ACME_HTTP_PREFIX)), keyAuthorization))
+                writeText(descriptor, 200, "OK", keyAuthorization);
+            else
+                writeText(descriptor, 404, "Not Found", "Unknown challenge");
+            return;
+        }
 
         // HEAD probes get the status headers without the body.
         if ((method == "GET" || method == "HEAD") && path == "/v1/join") {

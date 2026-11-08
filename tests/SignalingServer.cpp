@@ -1,3 +1,5 @@
+#include "Network/Acme/AcmeChallengeStore.h"
+#include "Network/Acme/AcmeCrypto.h"
 #include "Network/NetherNet/NetherNetSignalingServer.h"
 
 #ifdef _WIN32
@@ -108,7 +110,8 @@ namespace {
         return connected;
     }
 
-    void writeSelfSignedCertificate(const std::string &certificatePath, const std::string &keyPath) {
+    void writeSelfSignedCertificate(const std::string &certificatePath, const std::string &keyPath,
+                                    const std::string &commonName = "localhost") {
         EVP_PKEY *key = nullptr;
         EVP_PKEY_CTX *keyContext = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
         require(keyContext != nullptr && EVP_PKEY_keygen_init(keyContext) == 1
@@ -122,7 +125,7 @@ namespace {
         X509_gmtime_adj(X509_getm_notAfter(certificate), 3600);
         X509_set_pubkey(certificate, key);
         X509_NAME *name = X509_get_subject_name(certificate);
-        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *) "localhost", -1, -1, 0);
+        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *) commonName.c_str(), -1, -1, 0);
         X509_set_issuer_name(certificate, name);
         require(X509_sign(certificate, key, EVP_sha256()) > 0, "certificate signing failed");
 
@@ -235,6 +238,134 @@ namespace {
 
         server.stop();
     }
+
+    struct TlsProbe {
+        bool mConnected = false;
+        std::string mCommonName;
+        std::string mProtocol;
+    };
+
+    TlsProbe probeTls(unsigned short port, const std::string &serverName, bool offerAcme) {
+        TlsProbe probe;
+        SSL_CTX *context = SSL_CTX_new(TLS_client_method());
+        require(context != nullptr, "client context failed");
+        SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
+
+        const TestSocket descriptor = connectLocal(port);
+        SSL *ssl = SSL_new(context);
+        SSL_set_fd(ssl, (int) descriptor);
+        SSL_set_tlsext_host_name(ssl, serverName.c_str());
+        if (offerAcme) {
+            static const unsigned char ACME[] = {10, 'a', 'c', 'm', 'e', '-', 't', 'l', 's', '/', '1'};
+            SSL_set_alpn_protos(ssl, ACME, sizeof(ACME));
+        }
+
+        probe.mConnected = SSL_connect(ssl) == 1;
+        if (probe.mConnected) {
+            const unsigned char *protocol = nullptr;
+            unsigned int length = 0;
+            SSL_get0_alpn_selected(ssl, &protocol, &length);
+            probe.mProtocol.assign((const char *) protocol, length);
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+            X509 *peer = SSL_get1_peer_certificate(ssl);
+#else
+            X509 *peer = SSL_get_peer_certificate(ssl);
+#endif
+            char name[256] = {0};
+            if (peer != nullptr)
+                X509_NAME_get_text_by_NID(X509_get_subject_name(peer), NID_commonName, name, sizeof(name));
+            probe.mCommonName = name;
+            X509_free(peer);
+            SSL_shutdown(ssl);
+        }
+        ERR_clear_error();
+
+        SSL_free(ssl);
+        TEST_CLOSE_SOCKET(descriptor);
+        SSL_CTX_free(context);
+        return probe;
+    }
+
+    void answersAcmeChallengesBesideTheJoin() {
+        const std::string domain = "play.example.org";
+        std::string challengeCertificate;
+        std::string challengeKey;
+        require(acme::createTlsAlpnCertificate(domain, "token.thumb", challengeCertificate, challengeKey),
+                "no tls-alpn-01 certificate");
+
+        const std::shared_ptr<acme::ChallengeStore> store = std::make_shared<acme::ChallengeStore>();
+        store->putHttp("abc_-1", "abc_-1.thumb");
+        store->putTlsAlpn(domain, challengeCertificate, challengeKey);
+
+        nethernet::SignalingServer server;
+        server.setChallengeStore(store);
+        startServer(server);
+        require(!server.isSecure(), "a challenge-only context counts as a certificate");
+
+        const std::string http = plainRequest(server.getBoundPort(),
+                                              "GET /.well-known/acme-challenge/abc_-1 HTTP/1.1\r\nHost: x\r\n\r\n");
+        require(http.rfind("HTTP/1.1 200", 0) == 0 && http.find("\r\n\r\nabc_-1.thumb") != std::string::npos,
+                "the http-01 answer is wrong");
+        const std::string unknown = plainRequest(server.getBoundPort(),
+                                                 "GET /.well-known/acme-challenge/nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        require(unknown.rfind("HTTP/1.1 404", 0) == 0, "an unknown token was answered");
+
+        const std::string join = plainRequest(server.getBoundPort(), "GET /v1/join HTTP/1.1\r\nHost: x\r\n\r\n");
+        require(join.rfind("HTTP/1.1 200", 0) == 0, "ACME blocked /v1/join");
+
+        const TlsProbe answered = probeTls(server.getBoundPort(), domain, true);
+        require(answered.mConnected && answered.mProtocol == "acme-tls/1" && answered.mCommonName == domain,
+                "the tls-alpn-01 handshake did not present the challenge certificate");
+
+        require(!probeTls(server.getBoundPort(), "other.example.org", true).mConnected,
+                "a tls-alpn-01 hello for an unknown name was answered");
+        require(!probeTls(server.getBoundPort(), domain, false).mConnected,
+                "a plain TLS hello got the challenge certificate");
+
+        server.stop();
+    }
+
+    void reloadsTheCertificateWhileRunning(const std::filesystem::path &directory) {
+        const std::string firstCertificate = (directory / "first.pem").string();
+        const std::string firstKey = (directory / "first.key").string();
+        const std::string secondCertificate = (directory / "second.pem").string();
+        const std::string secondKey = (directory / "second.key").string();
+        writeSelfSignedCertificate(firstCertificate, firstKey, "first.test");
+        writeSelfSignedCertificate(secondCertificate, secondKey, "second.test");
+
+        nethernet::SignalingServer server;
+        server.setCertificate(firstCertificate, firstKey);
+        startServer(server);
+        require(probeTls(server.getBoundPort(), "first.test", false).mCommonName == "first.test",
+                "the first certificate is not served");
+
+        require(!server.reloadCertificate((directory / "missing.pem").string(), secondKey),
+                "a missing certificate was installed");
+        require(probeTls(server.getBoundPort(), "first.test", false).mCommonName == "first.test",
+                "a failed reload dropped the served certificate");
+
+        require(server.reloadCertificate(secondCertificate, secondKey), "the reload failed");
+        require(server.isSecure(), "the reloaded server is not secure");
+        require(probeTls(server.getBoundPort(), "second.test", false).mCommonName == "second.test",
+                "the reloaded certificate is not served");
+
+        server.stop();
+    }
+
+    void upgradesFromPlainHttpAtRuntime(const std::filesystem::path &directory) {
+        const std::string certificate = (directory / "late.pem").string();
+        const std::string key = (directory / "late.key").string();
+        writeSelfSignedCertificate(certificate, key, "late.test");
+
+        nethernet::SignalingServer server;
+        startServer(server);
+        require(!probeTls(server.getBoundPort(), "late.test", false).mConnected, "TLS before any certificate");
+        require(server.reloadCertificate(certificate, key) && server.isSecure(), "the first certificate failed");
+        require(probeTls(server.getBoundPort(), "late.test", false).mCommonName == "late.test",
+                "a certificate issued after start is not served");
+        server.stop();
+    }
 }
 
 int main() {
@@ -251,6 +382,9 @@ int main() {
         refusesTlsAtOnceWithoutCertificate();
         servesHttpsAndHttpWithCertificate(directory);
         keepsPlainHttpWhenTheCertificateIsMissing(directory);
+        answersAcmeChallengesBesideTheJoin();
+        reloadsTheCertificateWhileRunning(directory);
+        upgradesFromPlainHttpAtRuntime(directory);
     } catch (const std::exception &error) {
         std::cout << "FAIL: " << error.what() << std::endl;
         std::filesystem::remove_all(directory);

@@ -89,6 +89,12 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
     };
     mSignaling.setStatusProvider(status);
 
+    if (mAcmeEnabled) {
+        mAcmeChallenges = std::make_shared<acme::ChallengeStore>();
+        mSignaling.setChallengeStore(mAcmeChallenges);
+        mExtraSignaling.setChallengeStore(mAcmeChallenges);
+    }
+
     if (!mSignaling.start(definition.mIPv4Address, definition.mPort, handler))
         return false;
 
@@ -99,6 +105,16 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
         if (!mExtraSignaling.start(definition.mIPv4Address, mExtraSignalingPort, handler))
             LOG_WARN(LogAreaID::Network, "NetherNet signaling could not also listen on TCP %u",
                      (unsigned) mExtraSignalingPort);
+    }
+
+    if (mAcmeEnabled) {
+        mAcme.reset(new acme::Manager(mAcmeSettings, mAcmeChallenges,
+                                      [this](const std::string &certificate, const std::string &key) {
+                                          const bool installed = mSignaling.reloadCertificate(certificate, key);
+                                          mExtraSignaling.reloadCertificate(certificate, key);
+                                          return installed;
+                                      }));
+        mAcme->start();
     }
 
     unsigned char rawId[8];
@@ -128,6 +144,10 @@ void NetherNetInstance::disconnect() {
     mIsHosting = false;
     _detachSignaling();
     mDiscovery.stop();
+    if (mAcme != nullptr) {
+        mAcme->stop();
+        mAcme.reset();
+    }
     mExtraSignaling.stop();
     mSignaling.stop();
 
