@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 
 typedef struct evp_pkey_st EVP_PKEY;
@@ -15,7 +16,8 @@ namespace nethernet {
 
         bool issueToken();
 
-        const std::string &getToken() const { return mToken; }
+        // signaling threads negotiate concurrently, so the token is copied under the lock that guards its reissue
+        std::string getToken() const;
 
         const std::string &getDomain() const { return mDomain; }
 
@@ -31,6 +33,7 @@ namespace nethernet {
 
     private:
         EVP_PKEY *mPrivateKey;
+        mutable std::mutex mTokenMutex;
         std::string mToken;
         std::string mDomain;
     };

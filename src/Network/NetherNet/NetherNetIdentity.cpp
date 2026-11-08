@@ -12,6 +12,7 @@
 
 #include <ctime>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace nethernet {
@@ -284,8 +285,15 @@ namespace nethernet {
         if (raw.empty())
             return false;
 
-        mToken = signingInput + "." + encodeBase64Url(raw);
+        std::string token = signingInput + "." + encodeBase64Url(raw);
+        std::lock_guard<std::mutex> lock(mTokenMutex);
+        mToken = std::move(token);
         return true;
+    }
+
+    std::string Identity::getToken() const {
+        std::lock_guard<std::mutex> lock(mTokenMutex);
+        return mToken;
     }
 
     std::string Identity::signDetached(const std::string &payload) const {
