@@ -52,6 +52,8 @@ namespace nethernet {
         const int RECEIVE_TIMEOUT_SECONDS = 10;
         const int DRAIN_TIMEOUT_MS = 12000;
         const int DRAIN_POLL_MS = 20;
+        // a join burst outlasts the cap by one negotiation round: wait that long before answering busy
+        const int SLOT_WAIT_MS = 1500;
         const unsigned char TLS_HANDSHAKE_RECORD = 0x16;
 
         void setReceiveTimeout(FalconSignalingSocket descriptor) {
@@ -267,6 +269,11 @@ namespace nethernet {
         if (!mRunning.exchange(false))
             return;
 
+        {
+            std::lock_guard<std::mutex> lock(mSlotMutex);
+        }
+        mSlotFreed.notify_all();
+
         if (mListener >= 0) {
             ::shutdown((FalconSignalingSocket) mListener, FALCON_SIGNALING_SHUTDOWN_BOTH);
             FALCON_SIGNALING_CLOSE_SOCKET((FalconSignalingSocket) mListener);
@@ -280,8 +287,14 @@ namespace nethernet {
 
         // the detached client threads use the SSL context, so wait for them to drain before it is destroyed.
         // each is bounded by the receive timeout, so this cannot wait indefinitely.
-        for (int waited = 0; mActiveClients.load() > 0 && waited < DRAIN_TIMEOUT_MS; waited += DRAIN_POLL_MS)
+        for (int waited = 0; waited < DRAIN_TIMEOUT_MS; waited += DRAIN_POLL_MS) {
+            {
+                std::lock_guard<std::mutex> lock(mSlotMutex);
+                if (mActiveClients.load() == 0)
+                    break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(DRAIN_POLL_MS));
+        }
 
         _destroySslContext();
     }
@@ -298,20 +311,38 @@ namespace nethernet {
             }
 
             // one stalled client must not block the others, so each is served on its own detached thread. a cap
-            // keeps a flood of slow clients from spawning unbounded threads; past it the connection is dropped.
-            if (mActiveClients.load() >= MAX_CONCURRENT_CLIENTS) {
+            // keeps a flood of slow clients from spawning unbounded threads; past it the connection is refused.
+            if (!_waitForSlot()) {
                 _rejectBusy((long long) client);
                 continue;
             }
 
-            mActiveClients.fetch_add(1);
-
             std::thread([this, client]() {
                 _handleClient((long long) client);
                 FALCON_SIGNALING_CLOSE_SOCKET(client);
-                mActiveClients.fetch_sub(1);
+                _releaseSlot();
             }).detach();
         }
+    }
+
+    // takes a slot; later connections wait in the listen backlog meanwhile
+    bool SignalingServer::_waitForSlot() {
+        std::unique_lock<std::mutex> lock(mSlotMutex);
+        const bool freed = mSlotFreed.wait_for(lock, std::chrono::milliseconds(SLOT_WAIT_MS), [this]() {
+            return mActiveClients.load() < MAX_CONCURRENT_CLIENTS || !mRunning.load();
+        });
+        if (!freed || !mRunning.load())
+            return false;
+
+        mActiveClients.fetch_add(1);
+        return true;
+    }
+
+    // notified under the lock: stop() may destroy the server as soon as the count reads zero
+    void SignalingServer::_releaseSlot() {
+        std::lock_guard<std::mutex> lock(mSlotMutex);
+        mActiveClients.fetch_sub(1);
+        mSlotFreed.notify_one();
     }
 
     // a busy answer instead of a dropped socket: clients retry a 503, a reset reads as a failed join
