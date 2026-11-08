@@ -28,6 +28,9 @@ namespace acme {
         const char *const ACME_IDENTIFIER_OID = "1.3.6.1.5.5.7.1.31";
         const int64_t THIRTY_DAYS = 30LL * 24 * 3600;
         const long CHALLENGE_VALIDITY_SECONDS = 7L * 24 * 3600;
+        const size_t MAX_COMMON_NAME = 64;
+        const size_t MAX_DOMAIN = 253;
+        const size_t MAX_LABEL = 63;
 
         std::string bioText(BIO *bio) {
             char *data = nullptr;
@@ -35,23 +38,18 @@ namespace acme {
             return length > 0 ? std::string(data, (size_t) length) : std::string();
         }
 
-        // RFC 8555 identifiers: letters, digits, hyphens and dots, no wildcard
-        bool isDomain(const std::string &domain) {
-            if (domain.empty() || domain.size() > 253 || domain.front() == '.' || domain.back() == '.')
-                return false;
-
-            for (char character: domain) {
-                const unsigned char byte = (unsigned char) character;
-                if (!std::isalnum(byte) && byte != '-' && byte != '.')
-                    return false;
+        // ub-common-name is 64: a longer name lives in the SAN alone, which is all ACME reads.
+        // built apart: OpenSSL 4 hands out the subject of a certificate read-only
+        X509_NAME *subjectName(const std::string &domain) {
+            X509_NAME *name = X509_NAME_new();
+            if (name == nullptr || domain.size() > MAX_COMMON_NAME)
+                return name;
+            if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *) domain.c_str(), -1, -1,
+                                           0) != 1) {
+                X509_NAME_free(name);
+                return nullptr;
             }
-
-            return true;
-        }
-
-        bool addSubjectName(X509_NAME *name, const std::string &domain) {
-            return X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *) domain.c_str(), -1,
-                                              -1, 0) == 1;
+            return name;
         }
 
         X509_EXTENSION *subjectAltName(const std::string &domain) {
@@ -227,6 +225,46 @@ namespace acme {
         return verified;
     }
 
+    std::string normalizeDomain(const std::string &domain) {
+        std::string lowered = domain;
+        for (char &character: lowered)
+            character = (char) std::tolower((unsigned char) character);
+        return lowered;
+    }
+
+    bool isDomain(const std::string &domain) {
+        if (domain.empty() || domain.size() > MAX_DOMAIN || domain != normalizeDomain(domain))
+            return false;
+
+        size_t labels = 0;
+        size_t start = 0;
+        bool numericLast = false;
+        while (start <= domain.size()) {
+            size_t end = domain.find('.', start);
+            if (end == std::string::npos)
+                end = domain.size();
+
+            const std::string label = domain.substr(start, end - start);
+            if (label.empty() || label.size() > MAX_LABEL || label.front() == '-' || label.back() == '-')
+                return false;
+
+            numericLast = true;
+            for (char character: label) {
+                const unsigned char byte = (unsigned char) character;
+                if (!std::isalnum(byte) && byte != '-')
+                    return false;
+                if (!std::isdigit(byte))
+                    numericLast = false;
+            }
+
+            ++labels;
+            start = end + 1;
+        }
+
+        // a numeric top label is an IPv4 address, never a public name
+        return labels >= 2 && !numericLast;
+    }
+
     std::string sha256(const std::string &data) {
         unsigned char digest[EVP_MAX_MD_SIZE];
         unsigned int length = 0;
@@ -266,11 +304,12 @@ namespace acme {
         X509_REQ *request = X509_REQ_new();
         STACK_OF(X509_EXTENSION) *extensions = sk_X509_EXTENSION_new_null();
         X509_EXTENSION *names = subjectAltName(domain);
+        X509_NAME *subject = subjectName(domain);
         std::string der;
 
-        const bool built = request != nullptr && extensions != nullptr && names != nullptr
+        const bool built = request != nullptr && extensions != nullptr && names != nullptr && subject != nullptr
                            && X509_REQ_set_version(request, 0) == 1
-                           && addSubjectName(X509_REQ_get_subject_name(request), domain)
+                           && X509_REQ_set_subject_name(request, subject) == 1
                            && X509_REQ_set_pubkey(request, certificateKey.get()) == 1
                            && sk_X509_EXTENSION_push(extensions, names) > 0;
         if (built)
@@ -287,6 +326,7 @@ namespace acme {
             }
         }
 
+        X509_NAME_free(subject);
         X509_EXTENSION_free(names);
         sk_X509_EXTENSION_pop_free(extensions, X509_EXTENSION_free);
         X509_REQ_free(request);
@@ -314,10 +354,12 @@ namespace acme {
         ASN1_OCTET_STRING *value = ASN1_OCTET_STRING_new();
         X509_EXTENSION *acmeIdentifier = nullptr;
         X509_EXTENSION *names = subjectAltName(domain);
+        X509_NAME *subject = subjectName(domain);
         unsigned char serial[16];
         BIGNUM *serialNumber = nullptr;
 
         bool built = certificate != nullptr && oid != nullptr && value != nullptr && names != nullptr
+                     && subject != nullptr
                      && RAND_bytes(serial, sizeof(serial)) == 1
                      && ASN1_OCTET_STRING_set(value, (const unsigned char *) identifier.data(),
                                               (int) identifier.size()) == 1;
@@ -330,8 +372,8 @@ namespace acme {
                     && BN_to_ASN1_INTEGER(serialNumber, X509_get_serialNumber(certificate)) != nullptr
                     && X509_gmtime_adj(X509_getm_notBefore(certificate), 0) != nullptr
                     && X509_gmtime_adj(X509_getm_notAfter(certificate), CHALLENGE_VALIDITY_SECONDS) != nullptr
-                    && addSubjectName(X509_get_subject_name(certificate), domain)
-                    && X509_set_issuer_name(certificate, X509_get_subject_name(certificate)) == 1
+                    && X509_set_subject_name(certificate, subject) == 1
+                    && X509_set_issuer_name(certificate, subject) == 1
                     && X509_set_pubkey(certificate, key->get()) == 1
                     && X509_add_ext(certificate, names, -1) == 1
                     && X509_add_ext(certificate, acmeIdentifier, -1) == 1
@@ -349,6 +391,7 @@ namespace acme {
         }
 
         BN_free(serialNumber);
+        X509_NAME_free(subject);
         X509_EXTENSION_free(acmeIdentifier);
         X509_EXTENSION_free(names);
         ASN1_OCTET_STRING_free(value);
@@ -376,6 +419,16 @@ namespace acme {
         const bool covers = X509_check_host(certificate, domain.c_str(), domain.size(), 0, nullptr) == 1;
         X509_free(certificate);
         return covers;
+    }
+
+    bool keyMatches(const std::string &chainPem, const EcKey &key) {
+        X509 *certificate = readFirstCertificate(chainPem);
+        if (certificate == nullptr)
+            return false;
+
+        const bool matches = X509_check_private_key(certificate, key.get()) == 1;
+        X509_free(certificate);
+        return matches;
     }
 
     int64_t renewalTime(int64_t notBefore, int64_t notAfter) {

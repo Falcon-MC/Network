@@ -2,7 +2,10 @@
 
 #include "Core/Debug/BedrockLog.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#include <aclapi.h>
+#else
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#include <vector>
 
 namespace acme {
 
@@ -52,15 +56,56 @@ namespace acme {
             return true;
         }
 
-        // written beside then renamed: a crash never leaves half a key; keys are owner-only from creation
+#ifdef _WIN32
+        // a protected DACL granting the current account alone: the server folder's inherited ACL may be wider
+        bool restrictToOwner(const std::string &path) {
+            HANDLE token = nullptr;
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+                return false;
+
+            DWORD length = 0;
+            GetTokenInformation(token, TokenUser, nullptr, 0, &length);
+            std::vector<unsigned char> buffer(length);
+            const bool queried = length != 0
+                                 && GetTokenInformation(token, TokenUser, buffer.data(), length, &length) != 0;
+            CloseHandle(token);
+            if (!queried)
+                return false;
+
+            EXPLICIT_ACCESSA access;
+            ZeroMemory(&access, sizeof(access));
+            access.grfAccessPermissions = GENERIC_ALL;
+            access.grfAccessMode = SET_ACCESS;
+            access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+            access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            access.Trustee.TrusteeType = TRUSTEE_IS_USER;
+            access.Trustee.ptstrName = (LPSTR) ((TOKEN_USER *) buffer.data())->User.Sid;
+
+            PACL acl = nullptr;
+            if (SetEntriesInAclA(1, &access, nullptr, &acl) != ERROR_SUCCESS)
+                return false;
+
+            const DWORD result = SetNamedSecurityInfoA((LPSTR) path.c_str(), SE_FILE_OBJECT,
+                                                       DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                                       nullptr, nullptr, acl, nullptr);
+            LocalFree(acl);
+            return result == ERROR_SUCCESS;
+        }
+#endif
+
+        // written beside then renamed: a crash never leaves half a file; secrets are owner-only before any byte
         bool writeFile(const std::string &path, const std::string &text, bool secret) {
             const std::string temporary = path + ".tmp";
 #ifdef _WIN32
-            (void) secret;
             {
                 std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
                 if (!file.is_open())
                     return false;
+            }
+            if (secret && !restrictToOwner(temporary))
+                return false;
+            {
+                std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
                 file << text;
                 if (!file.good())
                     return false;
@@ -98,19 +143,33 @@ namespace acme {
         stop();
     }
 
-    std::string Manager::_path(const std::string &name) const {
+    // one folder per directory URL: a staging certificate or back-off never carries over to production
+    std::string Manager::_directoryFolder() const {
+        const std::string digest = sha256(mSettings.mClient.mDirectoryUrl);
+        static const char DIGITS[] = "0123456789abcdef";
+        std::string name;
+        for (size_t index = 0; index < 8 && index < digest.size(); ++index) {
+            name.push_back(DIGITS[((unsigned char) digest[index]) >> 4]);
+            name.push_back(DIGITS[((unsigned char) digest[index]) & 0x0f]);
+        }
         return (std::filesystem::path(mSettings.mStorageDirectory) / name).string();
     }
 
+    std::string Manager::_path(const std::string &name) const {
+        return (std::filesystem::path(_directoryFolder()) / name).string();
+    }
+
+    // key and chain in one file: a single rename replaces both, they can never disagree
     std::string Manager::getCertificatePath() const {
-        return _path(mSettings.mClient.mDomain + ".crt");
+        return _path(mSettings.mClient.mDomain + ".pem");
     }
 
     std::string Manager::getKeyPath() const {
-        return _path(mSettings.mClient.mDomain + ".key");
+        return getCertificatePath();
     }
 
     int64_t Manager::retryDelay(int failures, bool rateLimited, int64_t retryAfterSeconds) {
+        retryAfterSeconds = std::min(std::max<int64_t>(retryAfterSeconds, 0), MAX_RETRY_SECONDS);
         if (rateLimited)
             return std::max(retryAfterSeconds, RATE_LIMIT_RETRY_SECONDS);
 
@@ -120,15 +179,33 @@ namespace acme {
         return std::max(std::min(delay, MAX_RETRY_SECONDS), retryAfterSeconds);
     }
 
-    void Manager::start() {
+    bool Manager::start() {
         if (mRunning)
-            return;
+            return true;
+
+        // the name becomes a file name: checked before any path is built
+        mSettings.mClient.mDomain = normalizeDomain(mSettings.mClient.mDomain);
+        if (!isDomain(mSettings.mClient.mDomain)) {
+            LOG_ERROR(LogAreaID::Network, "ACME needs a public domain name, %s is not one",
+                      mSettings.mClient.mDomain.c_str());
+            return false;
+        }
+        if (mSettings.mClient.mDirectoryUrl.rfind("https://", 0) != 0) {
+            LOG_ERROR(LogAreaID::Network, "The ACME directory must be an https:// URL, not %s",
+                      mSettings.mClient.mDirectoryUrl.c_str());
+            return false;
+        }
 
         std::error_code error;
-        std::filesystem::create_directories(mSettings.mStorageDirectory, error);
-#ifndef _WIN32
+        std::filesystem::create_directories(_directoryFolder(), error);
+#ifdef _WIN32
+        restrictToOwner(mSettings.mStorageDirectory);
+        restrictToOwner(_directoryFolder());
+#else
         ::chmod(mSettings.mStorageDirectory.c_str(), 0700);
+        ::chmod(_directoryFolder().c_str(), 0700);
 #endif
+        writeFile(_path("directory.txt"), mSettings.mClient.mDirectoryUrl + "\n", false);
 
         // a stored certificate is served before the first join, the network round trips wait for the thread
         int64_t renewAt = now();
@@ -142,6 +219,7 @@ namespace acme {
         mStopping.store(false);
         mRunning = true;
         mThread = std::thread(&Manager::_run, this);
+        return true;
     }
 
     void Manager::stop() {
@@ -160,15 +238,15 @@ namespace acme {
     }
 
     bool Manager::_installStored(int64_t &outRenewAt) {
-        std::string chain;
-        std::string key;
-        if (!readFile(getCertificatePath(), chain) || !readFile(getKeyPath(), key))
+        std::string bundle;
+        if (!readFile(getCertificatePath(), bundle))
             return false;
 
         int64_t notBefore = 0;
         int64_t notAfter = 0;
-        if (!readValidity(chain, notBefore, notAfter) || now() >= notAfter
-            || !certificateCovers(chain, mSettings.mClient.mDomain) || EcKey::fromPem(key) == nullptr)
+        const std::shared_ptr<EcKey> key = EcKey::fromPem(bundle);
+        if (key == nullptr || !readValidity(bundle, notBefore, notAfter) || now() >= notAfter
+            || !certificateCovers(bundle, mSettings.mClient.mDomain) || !keyMatches(bundle, *key))
             return false;
 
         if (!mInstaller(getCertificatePath(), getKeyPath()))
@@ -259,8 +337,8 @@ namespace acme {
         int64_t notBefore = 0;
         int64_t notAfter = 0;
         if (outcome.mIssued && readValidity(outcome.mChainPem, notBefore, notAfter)
-            && writeFile(getKeyPath(), certificateKey->toPem(), true)
-            && writeFile(getCertificatePath(), outcome.mChainPem, false)
+            && keyMatches(outcome.mChainPem, *certificateKey)
+            && writeFile(getCertificatePath(), certificateKey->toPem() + outcome.mChainPem, true)
             && mInstaller(getCertificatePath(), getKeyPath())) {
             mInstalledNotAfter = notAfter;
             mFailures = 0;

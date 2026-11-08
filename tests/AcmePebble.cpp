@@ -122,7 +122,7 @@ namespace {
                                                                            const std::string &key) {
                 return listeners.mTls.reloadCertificate(certificate, key);
             });
-            manager.start();
+            require(manager.start(), "the manager did not start");
 
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
             while (!listeners.mTls.isSecure() && std::chrono::steady_clock::now() < deadline)
@@ -134,7 +134,8 @@ namespace {
             const auto permissions = std::filesystem::status(manager.getKeyPath()).permissions();
             require((permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all))
                     == std::filesystem::perms::none, "the certificate key is readable by others");
-            const auto account = std::filesystem::status(storage / "account.key").permissions();
+            const auto account = std::filesystem::status(
+                    std::filesystem::path(manager.getKeyPath()).parent_path() / "account.key").permissions();
             require((account & (std::filesystem::perms::group_all | std::filesystem::perms::others_all))
                     == std::filesystem::perms::none, "the account key is readable by others");
 #endif
@@ -146,7 +147,7 @@ namespace {
                                                                      const std::string &key) {
             return restarted.mTls.reloadCertificate(certificate, key);
         });
-        again.start();
+        require(again.start(), "the restarted manager did not start");
         require(restarted.mTls.isSecure(), "the stored certificate was not loaded at start");
         again.stop();
     }

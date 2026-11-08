@@ -64,7 +64,7 @@ find_package(OpenSSL REQUIRED)
 target_link_libraries(FalconNetwork PUBLIC Threads::Threads FalconProtocol LibDataChannel::LibDataChannelStatic snappy)
 
 if (WIN32)
-    target_link_libraries(FalconNetwork PUBLIC ws2_32 z ssl crypto crypt32)
+    target_link_libraries(FalconNetwork PUBLIC ws2_32 z ssl crypto crypt32 advapi32)
 else ()
     target_link_libraries(FalconNetwork PUBLIC ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto)
 endif ()

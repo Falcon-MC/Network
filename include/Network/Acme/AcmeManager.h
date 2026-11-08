@@ -16,7 +16,7 @@ namespace acme {
 
     struct ManagerSettings {
         ClientSettings mClient;
-        // account key, certificate, key and retry state; created owner-only
+        // one owner-only folder per directory URL: account key, key and chain bundle, retry state
         std::string mStorageDirectory;
     };
 
@@ -39,7 +39,8 @@ namespace acme {
 
         Manager &operator=(const Manager &) = delete;
 
-        void start();
+        // false when the domain or directory is unusable; nothing is written then
+        bool start();
 
         void stop();
 
@@ -61,6 +62,8 @@ namespace acme {
         void _readState();
 
         void _writeState();
+
+        std::string _directoryFolder() const;
 
         std::string _path(const std::string &name) const;
 

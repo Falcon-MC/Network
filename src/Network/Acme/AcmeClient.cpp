@@ -21,6 +21,17 @@ namespace acme {
         const int64_t DEFAULT_POLL_SECONDS = 2;
         const int64_t MAX_POLL_SECONDS = 30;
         const size_t MAX_RESPONSE_SIZE = 1024 * 1024;
+        const int64_t MAX_RETRY_AFTER_SECONDS = 24 * 3600;
+        // the CA may refuse any nonce: RFC 8555 6.5 asks the client to retry with the fresh one
+        const int NONCE_ATTEMPTS = 4;
+        // RFC 8555 6.1: every request carries one, CAs refuse the others
+        const char *const USER_AGENT = "FalconNetwork-ACME/1";
+
+        HttpClient::Headers baseHeaders() {
+            HttpClient::Headers headers;
+            headers.emplace_back("User-Agent", USER_AGENT);
+            return headers;
+        }
 
         std::unique_ptr<json::Value> parseJson(const std::string &text) {
             json::Parser parser(text);
@@ -42,12 +53,14 @@ namespace acme {
             return false;
         }
 
-        // seconds only: a date form falls back to the caller's default
+        // seconds only: a date form falls back to the caller's default; capped so a bad value cannot park renewal
         int64_t retryAfter(const HttpResponse &response) {
             const std::string value = response.getHeader("retry-after");
             if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
                 return 0;
-            return std::strtoll(value.c_str(), nullptr, 10);
+            if (value.size() > 9)
+                return MAX_RETRY_AFTER_SECONDS;
+            return std::min<int64_t>(std::strtoll(value.c_str(), nullptr, 10), MAX_RETRY_AFTER_SECONDS);
         }
 
         // tokens land in an URL path and an SNI lookup: base64url only
@@ -105,9 +118,15 @@ namespace acme {
     }
 
     bool Client::_loadDirectory(Outcome &outcome) {
+        // nonces and the account key binding travel in it: never in clear text
+        if (mSettings.mDirectoryUrl.rfind("https://", 0) != 0) {
+            outcome.mError = "the ACME directory must be an https:// URL, not " + mSettings.mDirectoryUrl;
+            return false;
+        }
+
         HttpResponse response;
         std::string error;
-        if (!HttpClient::request("GET", mSettings.mDirectoryUrl, {}, std::string(), response, error,
+        if (!HttpClient::request("GET", mSettings.mDirectoryUrl, baseHeaders(), std::string(), response, error,
                                  mSettings.mRequestTimeoutMs, MAX_RESPONSE_SIZE, mCancel, {},
                                  mSettings.mExtraRootsFile)) {
             outcome.mError = "could not reach the ACME directory " + mSettings.mDirectoryUrl + ": " + error;
@@ -135,7 +154,7 @@ namespace acme {
     bool Client::_fetchNonce(Outcome &outcome) {
         HttpResponse response;
         std::string error;
-        if (!HttpClient::request("GET", mNewNonceUrl, {}, std::string(), response, error,
+        if (!HttpClient::request("GET", mNewNonceUrl, baseHeaders(), std::string(), response, error,
                                  mSettings.mRequestTimeoutMs, MAX_RESPONSE_SIZE, mCancel, {},
                                  mSettings.mExtraRootsFile)) {
             outcome.mError = "could not fetch an ACME nonce: " + error;
@@ -152,8 +171,7 @@ namespace acme {
 
     bool Client::_post(const std::string &url, const std::string &payload, Reply &reply, Outcome &outcome,
                        const char *accept) {
-        // one retry: a nonce can expire between two requests
-        for (int attempt = 0; attempt < 2; ++attempt) {
+        for (int attempt = 0; attempt < NONCE_ATTEMPTS; ++attempt) {
             if (mNonce.empty() && !_fetchNonce(outcome))
                 return false;
 
@@ -164,7 +182,7 @@ namespace acme {
                 return false;
             }
 
-            HttpClient::Headers headers;
+            HttpClient::Headers headers = baseHeaders();
             headers.emplace_back("Content-Type", JOSE_CONTENT_TYPE);
             if (accept != nullptr)
                 headers.emplace_back("Accept", accept);
@@ -184,7 +202,7 @@ namespace acme {
                 return true;
 
             const std::unique_ptr<json::Value> problem = parseJson(reply.mResponse.mBody);
-            if (attempt == 0 && problem != nullptr && member(*problem, "type") == BAD_NONCE)
+            if (attempt + 1 < NONCE_ATTEMPTS && problem != nullptr && member(*problem, "type") == BAD_NONCE)
                 continue;
 
             _readProblem(reply.mResponse, "ACME request", outcome);

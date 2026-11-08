@@ -12,10 +12,14 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
     // fixed key: expected values computed outside with openssl and python hashlib
@@ -30,7 +34,7 @@ namespace {
     const char *const ACCOUNT_THUMBPRINT = "I5XC7ZkHB9d6DjYamT7-CD_AEIYsl9DMtpHfr5E98ps";
     const char *const TOKEN = "tok-en_1";
     const char *const KEY_AUTHORIZATION_SHA256 = "08e48f98ac4452d1e189ab0ad7b0cb1b5dd1bdd95099dff23df64f29f804b879";
-    const char *const DOMAIN = "play.example.org";
+    const char *const TEST_DOMAIN = "play.example.org";
 
     void require(bool condition, const std::string &message) {
         if (!condition)
@@ -108,7 +112,7 @@ namespace {
 
     void csrNamesTheDomain() {
         const std::shared_ptr<acme::EcKey> key = acme::EcKey::generate();
-        const std::string der = acme::createCsr(*key, DOMAIN);
+        const std::string der = acme::createCsr(*key, TEST_DOMAIN);
         require(!der.empty(), "no CSR");
 
         const unsigned char *cursor = (const unsigned char *) der.data();
@@ -130,7 +134,7 @@ namespace {
                 GENERAL_NAME *entry = sk_GENERAL_NAME_value(names, name);
                 if (entry->type == GEN_DNS
                     && std::string((const char *) ASN1_STRING_get0_data(entry->d.dNSName),
-                                   (size_t) ASN1_STRING_length(entry->d.dNSName)) == DOMAIN)
+                                   (size_t) ASN1_STRING_length(entry->d.dNSName)) == TEST_DOMAIN)
                     named = true;
             }
             GENERAL_NAMES_free(names);
@@ -150,9 +154,9 @@ namespace {
 
         std::string certificatePem;
         std::string keyPem;
-        require(acme::createTlsAlpnCertificate(DOMAIN, keyAuthorization, certificatePem, keyPem),
+        require(acme::createTlsAlpnCertificate(TEST_DOMAIN, keyAuthorization, certificatePem, keyPem),
                 "no tls-alpn-01 certificate");
-        require(acme::certificateCovers(certificatePem, DOMAIN), "the challenge certificate misses the domain");
+        require(acme::certificateCovers(certificatePem, TEST_DOMAIN), "the challenge certificate misses the domain");
         require(acme::EcKey::fromPem(keyPem) != nullptr, "the challenge key does not load");
 
         BIO *bio = BIO_new_mem_buf(certificatePem.data(), (int) certificatePem.size());
@@ -165,7 +169,7 @@ namespace {
         ASN1_OBJECT_free(oid);
         require(index >= 0, "the acmeIdentifier extension is missing");
 
-        X509_EXTENSION *extension = X509_get_ext(certificate, index);
+        const X509_EXTENSION *extension = X509_get_ext(certificate, index);
         require(X509_EXTENSION_get_critical(extension) == 1, "acmeIdentifier must be critical");
         const ASN1_OCTET_STRING *data = X509_EXTENSION_get_data(extension);
         const std::string value((const char *) ASN1_STRING_get0_data(data), (size_t) ASN1_STRING_length(data));
@@ -183,7 +187,7 @@ namespace {
 
         std::string certificatePem;
         std::string keyPem;
-        require(acme::createTlsAlpnCertificate(DOMAIN, "x.y", certificatePem, keyPem), "no certificate");
+        require(acme::createTlsAlpnCertificate(TEST_DOMAIN, "x.y", certificatePem, keyPem), "no certificate");
         int64_t notBefore = 0;
         int64_t notAfter = 0;
         require(acme::readValidity(certificatePem, notBefore, notAfter) && notAfter - notBefore >= 7 * day - 1
@@ -198,6 +202,8 @@ namespace {
         require(acme::Manager::retryDelay(1, false, 5000) == 5000, "Retry-After was ignored");
         require(acme::Manager::retryDelay(1, true, 0) == 3600, "a rate limit retried within the hour");
         require(acme::Manager::retryDelay(1, true, 7200) == 7200, "a rate limit Retry-After was ignored");
+        require(acme::Manager::retryDelay(1, true, 9000000000000LL) == 24 * 3600, "Retry-After is not capped");
+        require(acme::Manager::retryDelay(1, false, -5) == 600, "a negative Retry-After was used");
     }
 
     void challengeStoreIgnoresNameCase() {
@@ -205,9 +211,9 @@ namespace {
         store.putTlsAlpn("Play.Example.ORG", "cert", "key");
         std::string certificate;
         std::string key;
-        require(store.findTlsAlpn(DOMAIN, certificate, key) && certificate == "cert", "SNI lookup is case sensitive");
-        store.removeTlsAlpn(DOMAIN);
-        require(!store.findTlsAlpn(DOMAIN, certificate, key), "the answer outlived its removal");
+        require(store.findTlsAlpn(TEST_DOMAIN, certificate, key) && certificate == "cert", "SNI lookup is case sensitive");
+        store.removeTlsAlpn(TEST_DOMAIN);
+        require(!store.findTlsAlpn(TEST_DOMAIN, certificate, key), "the answer outlived its removal");
 
         store.putHttp(TOKEN, "auth");
         std::string answer;
@@ -221,6 +227,126 @@ namespace {
                 && acme::parseChallengeType("http-01", type) && type == acme::ChallengeType::Http01
                 && !acme::parseChallengeType("dns-01", type), "challenge names do not parse");
     }
+
+    void domainsAreStrict() {
+        const std::string label63(63, 'a');
+        for (const std::string &valid: std::vector<std::string>{"play.example.org", "a-b.example.org", "xn--bcher-kva.example", "1.example.org",
+                                       label63 + ".org"}) {
+            require(acme::isDomain(valid), "a valid domain was refused: " + valid);
+        }
+        for (const std::string &invalid: std::vector<std::string>{"", "localhost", "a..b.org", ".example.org", "example.org.", "-a.example.org",
+                                         "a-.example.org", "1.2.3.4", "::1", "2001:db8::1", "../x.org", "a/b.org",
+                                         "a b.org", "Play.Example.org", "*.example.org", label63 + "a.org",
+                                         std::string(250, 'a') + ".org"}) {
+            require(!acme::isDomain(invalid), "an invalid domain was accepted: " + invalid);
+        }
+        require(acme::normalizeDomain("Play.Example.ORG") == "play.example.org", "the domain is not lowercased");
+    }
+
+    void longDomainsSkipTheCommonName() {
+        const std::string domain = std::string(60, 'a') + "." + std::string(20, 'b') + ".example.org";
+        require(acme::isDomain(domain) && domain.size() > 64, "the long domain is not valid");
+        const std::shared_ptr<acme::EcKey> key = acme::EcKey::generate();
+        require(!acme::createCsr(*key, domain).empty(), "a 65+ character domain got no CSR");
+
+        std::string certificate;
+        std::string challengeKey;
+        require(acme::createTlsAlpnCertificate(domain, "x.y", certificate, challengeKey)
+                && acme::certificateCovers(certificate, domain), "a 65+ character domain got no challenge certificate");
+    }
+
+    void keysMatchTheirCertificate() {
+        std::string certificate;
+        std::string key;
+        require(acme::createTlsAlpnCertificate(TEST_DOMAIN, "x.y", certificate, key), "no certificate");
+        const std::shared_ptr<acme::EcKey> own = acme::EcKey::fromPem(key);
+        const std::shared_ptr<acme::EcKey> other = acme::EcKey::generate();
+        require(acme::keyMatches(certificate, *own), "the certificate key does not match");
+        require(!acme::keyMatches(certificate, *other), "a foreign key matched");
+    }
+
+    void refusesAClearTextDirectory() {
+        acme::ClientSettings settings;
+        settings.mDirectoryUrl = "http://127.0.0.1:1/directory";
+        settings.mDomain = TEST_DOMAIN;
+        acme::ChallengeStore store;
+        acme::Client client(settings, accountKey(), store, nullptr);
+        const acme::Outcome outcome = client.issue(*acme::EcKey::generate());
+        require(!outcome.mIssued && outcome.mError.find("https://") != std::string::npos,
+                "a clear text directory was contacted");
+    }
+
+    struct Installed {
+        int mCount = 0;
+        std::string mPath;
+    };
+
+    acme::ManagerSettings managerSettings(const std::filesystem::path &storage, const std::string &directory) {
+        acme::ManagerSettings settings;
+        // port 1 never answers: these checks stay offline
+        settings.mClient.mDirectoryUrl = directory;
+        settings.mClient.mDomain = TEST_DOMAIN;
+        settings.mStorageDirectory = storage.string();
+        return settings;
+    }
+
+    void writeBundle(const std::string &path, const std::string &keyPem, const std::string &certificatePem) {
+        std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+        std::ofstream(path, std::ios::binary) << keyPem << certificatePem;
+    }
+
+    void managerKeepsStagingApartAndChecksTheBundle(const std::filesystem::path &storage) {
+        const std::shared_ptr<acme::ChallengeStore> store = std::make_shared<acme::ChallengeStore>();
+        Installed installed;
+        const acme::Manager::Installer installer = [&installed](const std::string &certificate,
+                                                               const std::string &key) {
+            ++installed.mCount;
+            installed.mPath = certificate;
+            return certificate == key;
+        };
+
+        std::string certificate;
+        std::string key;
+        require(acme::createTlsAlpnCertificate(TEST_DOMAIN, "x.y", certificate, key), "no certificate");
+
+        const acme::ManagerSettings staging = managerSettings(storage, "https://127.0.0.1:1/staging/directory");
+        {
+            acme::Manager manager(staging, store, installer);
+            writeBundle(manager.getCertificatePath(), key, certificate);
+            require(manager.start(), "the manager did not start");
+            manager.stop();
+            require(installed.mCount == 1 && installed.mPath == manager.getCertificatePath(),
+                    "the stored bundle was not installed at start");
+        }
+
+        {
+            acme::Manager production(managerSettings(storage, "https://127.0.0.1:1/production/directory"), store,
+                                     installer);
+            require(production.start(), "the production manager did not start");
+            production.stop();
+            require(installed.mCount == 1, "a staging certificate was served by the production directory");
+            acme::Manager stagingAgain(staging, store, installer);
+            require(production.getCertificatePath() != stagingAgain.getCertificatePath(),
+                    "staging and production share a folder");
+        }
+
+        {
+            acme::Manager mismatched(staging, store, installer);
+            writeBundle(mismatched.getCertificatePath(), acme::EcKey::generate()->toPem(), certificate);
+            require(mismatched.start(), "the manager did not start");
+            mismatched.stop();
+            require(installed.mCount == 1, "a key that does not match its certificate was installed");
+        }
+
+        acme::ManagerSettings bad = managerSettings(storage, "https://127.0.0.1:1/directory");
+        bad.mClient.mDomain = "../outside.org";
+        acme::Manager escaping(bad, store, installer);
+        require(!escaping.start(), "a domain with a path was accepted");
+        require(!std::filesystem::exists(storage.parent_path() / "outside.org.pem"), "a file escaped the storage");
+
+        acme::Manager clear(managerSettings(storage, "http://127.0.0.1:1/directory"), store, installer);
+        require(!clear.start(), "a clear text directory was accepted");
+    }
 }
 
 int main() {
@@ -232,6 +358,14 @@ int main() {
         renewsAThirdBeforeExpiryAtMostThirtyDays();
         retriesBackOffAndRespectRateLimits();
         challengeStoreIgnoresNameCase();
+        domainsAreStrict();
+        longDomainsSkipTheCommonName();
+        keysMatchTheirCertificate();
+        refusesAClearTextDirectory();
+        const std::filesystem::path storage = std::filesystem::temp_directory_path()
+                / ("falcon-acme-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        managerKeepsStagingApartAndChecksTheBundle(storage);
+        std::filesystem::remove_all(storage);
     } catch (const std::exception &error) {
         std::cout << "FAIL: " << error.what() << std::endl;
         return 1;

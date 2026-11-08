@@ -114,7 +114,8 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
                                           mExtraSignaling.reloadCertificate(certificate, key);
                                           return installed;
                                       }));
-        mAcme->start();
+        if (!mAcme->start())
+            mAcme.reset();
     }
 
     unsigned char rawId[8];

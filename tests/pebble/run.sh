@@ -43,12 +43,13 @@ cat > "$work/pebble.json" <<CONFIG
 CONFIG
 
 # every name resolves to 127.0.0.1; its own challenge servers stay off
-"$home/pebble-challtestsrv" -defaultIPv4 127.0.0.1 -defaultIPv6 "" -dns01 "127.0.0.1:$dns_port" \
+"$home/pebble-challtestsrv" -defaultIPv4 127.0.0.1 -defaultIPv6 "" -dnsserver "127.0.0.1:$dns_port" \
     -http01 "" -https01 "" -tlsalpn01 "" -doh "" -management "127.0.0.1:$dns_management_port" \
     > "$work/challtestsrv.log" 2>&1 &
 pids="$pids $!"
 
-PEBBLE_VA_NOSLEEP=1 PEBBLE_WFE_NONCEREJECT=0 PEBBLE_AUTHZREUSE=0 \
+# Pebble's default 5% nonce rejections stay on: they exercise the badNonce retry
+PEBBLE_VA_NOSLEEP=1 PEBBLE_AUTHZREUSE=0 \
     "$home/pebble" -config "$work/pebble.json" -dnsserver "127.0.0.1:$dns_port" > "$work/pebble.log" 2>&1 &
 pids="$pids $!"
 
@@ -68,6 +69,6 @@ FALCON_PEBBLE_DIRECTORY="https://localhost:$api_port/dir" FALCON_PEBBLE_ROOTS="$
     "$test_binary" || status=$?
 
 if [ "$status" -ne 0 ]; then
-    cat "$work/pebble.log"
+    cat "$work/challtestsrv.log" "$work/pebble.log"
 fi
 exit "$status"
