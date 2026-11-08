@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 typedef struct ssl_ctx_st SSL_CTX;
@@ -72,6 +73,9 @@ namespace nethernet {
 
         static const int MAX_CONCURRENT_CLIENTS = 64;
 
+        // a household or a shared NAT joins through a handful of sockets at once, never more
+        static const int MAX_CLIENTS_PER_ADDRESS = 8;
+
         // a burst of joins queues in the kernel instead of being refused
         static const int LISTEN_BACKLOG = 128;
 
@@ -79,7 +83,13 @@ namespace nethernet {
 
         bool _waitForSlot();
 
-        void _releaseSlot();
+        bool _claimAddress(const std::string &address);
+
+        void _releaseAddress(const std::string &address);
+
+        void _dropAddress(const std::string &address);
+
+        void _releaseSlot(const std::string &address);
 
         void _rejectBusy(long long descriptor);
 
@@ -94,6 +104,7 @@ namespace nethernet {
         std::atomic<int> mActiveClients{0};
         std::mutex mSlotMutex;
         std::condition_variable mSlotFreed;
+        std::unordered_map<std::string, int> mClientsPerAddress;
         std::atomic<bool> mRunning;
         long long mListener;
         std::string mCertificatePath;

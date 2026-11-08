@@ -5,9 +5,12 @@
 #include <ws2tcpip.h>
 #else
 
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -23,6 +26,7 @@
 #include <openssl/x509.h>
 
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <mutex>
@@ -49,13 +53,18 @@ namespace nethernet {
     struct SignalingServer::Stream {
         FalconSignalingSocket mDescriptor;
         SSL *mSsl;
+        // handshake, headers and body share it: a request arrives whole within it or not at all
+        std::chrono::steady_clock::time_point mDeadline;
     };
 
     namespace {
 
         const size_t MAX_SDP_BODY_SIZE = 1 << 20;
         const size_t MAX_HEADER_SIZE = 16 * 1024;
-        const int RECEIVE_TIMEOUT_SECONDS = 10;
+        // the game's own probe gives up after 3 s: sub_143A92EB0
+        const int REQUEST_DEADLINE_MS = 5000;
+        // the answer comes after the negotiation, it gets its own budget
+        const int WRITE_DEADLINE_MS = 5000;
         const int DRAIN_TIMEOUT_MS = 12000;
         const int DRAIN_POLL_MS = 20;
         // a join burst outlasts the cap by one negotiation round: wait that long before answering busy
@@ -66,15 +75,60 @@ namespace nethernet {
         // fatal handshake_failure alert record
         const char TLS_HANDSHAKE_FAILURE[] = {0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28};
 
-        void setReceiveTimeout(FalconSignalingSocket descriptor) {
+        typedef SignalingServer::Stream Stream;
+        typedef std::chrono::steady_clock Clock;
+
+        bool setNonBlocking(FalconSignalingSocket descriptor) {
 #ifdef _WIN32
-            const DWORD timeout = RECEIVE_TIMEOUT_SECONDS * 1000;
+            u_long mode = 1;
+            return ioctlsocket(descriptor, FIONBIO, &mode) == 0;
 #else
-            timeval timeout;
-            timeout.tv_sec = RECEIVE_TIMEOUT_SECONDS;
-            timeout.tv_usec = 0;
+            const int flags = fcntl(descriptor, F_GETFL, 0);
+            return flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0;
 #endif
-            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout, sizeof(timeout));
+        }
+
+        bool wouldBlock() {
+#ifdef _WIN32
+            return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+            return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+        }
+
+        // false once the deadline passed or the socket failed
+        bool waitFor(FalconSignalingSocket descriptor, bool writable, Clock::time_point deadline) {
+            const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - Clock::now()).count();
+            if (remaining <= 0)
+                return false;
+
+#ifdef _WIN32
+            WSAPOLLFD entry;
+            entry.fd = descriptor;
+            entry.events = writable ? POLLWRNORM : POLLRDNORM;
+            entry.revents = 0;
+            const int ready = WSAPoll(&entry, 1, (INT) remaining);
+#else
+            pollfd entry;
+            entry.fd = descriptor;
+            entry.events = writable ? POLLOUT : POLLIN;
+            entry.revents = 0;
+            const int ready = poll(&entry, 1, (int) remaining);
+#endif
+            return ready > 0;
+        }
+
+        // retries the TLS or socket call while it would block, within the deadline
+        bool waitForTls(const Stream &stream, int result, Clock::time_point deadline) {
+            switch (SSL_get_error(stream.mSsl, result)) {
+                case SSL_ERROR_WANT_READ:
+                    return waitFor(stream.mDescriptor, false, deadline);
+                case SSL_ERROR_WANT_WRITE:
+                    return waitFor(stream.mDescriptor, true, deadline);
+                default:
+                    return false;
+            }
         }
 
         // the probe answer and the TLS flights are small writes: Nagle against a delayed ack stalls each one
@@ -100,27 +154,21 @@ namespace nethernet {
         }
 
         // a large ClientHello spans segments: one arriving after close turns it into a reset that drops the alert,
-        // so read until the peer closes, bounded by a short timeout
+        // so read until the peer closes, bounded by a short timeout; the socket is non-blocking here
         void drainUntilClosed(FalconSignalingSocket descriptor) {
-#ifdef _WIN32
-            const DWORD timeout = REFUSAL_DRAIN_MS;
-#else
-            timeval timeout;
-            timeout.tv_sec = 0;
-            timeout.tv_usec = REFUSAL_DRAIN_MS * 1000;
-#endif
-            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout, sizeof(timeout));
-
             char discard[4096];
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(REFUSAL_DRAIN_MS);
-            while (std::chrono::steady_clock::now() < deadline
-                   && recv(descriptor, discard, (int) sizeof(discard), 0) > 0) {
+            const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(REFUSAL_DRAIN_MS);
+            for (;;) {
+                const int read = (int) recv(descriptor, discard, (int) sizeof(discard), 0);
+                if (read > 0)
+                    continue;
+                if (read == 0 || !wouldBlock() || !waitFor(descriptor, false, deadline))
+                    return;
             }
         }
 
         // no certificate: fail the https probe at once so the game moves on to http on this port
         void refuseTls(FalconSignalingSocket descriptor) {
-            drainPending(descriptor);
             send(descriptor, TLS_HANDSHAKE_FAILURE, (int) sizeof(TLS_HANDSHAKE_FAILURE), 0);
             shutdown(descriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
             drainUntilClosed(descriptor);
@@ -180,6 +228,63 @@ namespace nethernet {
             return used;
         }
 
+        int readStream(const Stream &stream, char *buffer, size_t size) {
+            for (;;) {
+                if (stream.mSsl != nullptr) {
+                    const int read = SSL_read(stream.mSsl, buffer, (int) size);
+                    if (read > 0)
+                        return read;
+                    if (!waitForTls(stream, read, stream.mDeadline))
+                        return -1;
+                    continue;
+                }
+
+                const int read = (int) recv(stream.mDescriptor, buffer, (int) size, 0);
+                if (read >= 0)
+                    return read;
+                if (!wouldBlock() || !waitFor(stream.mDescriptor, false, stream.mDeadline))
+                    return -1;
+            }
+        }
+
+        bool acceptTls(const Stream &stream) {
+            for (;;) {
+                const int result = SSL_accept(stream.mSsl);
+                if (result == 1)
+                    return true;
+                if (!waitForTls(stream, result, stream.mDeadline))
+                    return false;
+            }
+        }
+
+        void writeAll(const Stream &stream, const std::string &data) {
+            const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(WRITE_DEADLINE_MS);
+            size_t sent = 0;
+
+            while (sent < data.size()) {
+                if (stream.mSsl != nullptr) {
+                    const int written = SSL_write(stream.mSsl, data.data() + sent, (int) (data.size() - sent));
+                    if (written > 0) {
+                        sent += (size_t) written;
+                        continue;
+                    }
+                    if (!waitForTls(stream, written, deadline))
+                        return;
+                    continue;
+                }
+
+                const int written = (int) send(stream.mDescriptor, data.data() + sent, (int) (data.size() - sent),
+                                               0);
+                if (written > 0) {
+                    sent += (size_t) written;
+                    continue;
+                }
+                if (written < 0 && wouldBlock() && waitFor(stream.mDescriptor, true, deadline))
+                    continue;
+                return;
+            }
+        }
+
         // a peer that closed while we answer must cost its socket, never the process
         void ignoreBrokenPipes() {
 #ifndef _WIN32
@@ -190,31 +295,13 @@ namespace nethernet {
 #endif
         }
 
-        typedef SignalingServer::Stream Stream;
-
-        int readStream(const Stream &stream, char *buffer, size_t size) {
-            if (stream.mSsl != nullptr)
-                return SSL_read(stream.mSsl, buffer, (int) size);
-
-            return recv(stream.mDescriptor, buffer, (int) size, 0);
-        }
-
-        void writeAll(const Stream &stream, const std::string &data) {
-            size_t sent = 0;
-
-            while (sent < data.size()) {
-                int written;
-
-                if (stream.mSsl != nullptr)
-                    written = SSL_write(stream.mSsl, data.data() + sent, (int) (data.size() - sent));
-                else
-                    written = send(stream.mDescriptor, data.data() + sent, (int) (data.size() - sent), 0);
-
-                if (written <= 0)
-                    return;
-
-                sent += (size_t) written;
-            }
+        std::string peerAddress(const sockaddr_storage &address) {
+            char text[INET6_ADDRSTRLEN] = {0};
+            if (address.ss_family == AF_INET)
+                inet_ntop(AF_INET, &((const sockaddr_in *) &address)->sin_addr, text, sizeof(text));
+            else if (address.ss_family == AF_INET6)
+                inet_ntop(AF_INET6, &((const sockaddr_in6 *) &address)->sin6_addr, text, sizeof(text));
+            return text;
         }
 
         void writeText(const Stream &descriptor, int statusCode, const std::string &reason,
@@ -510,7 +597,7 @@ namespace nethernet {
             mThread.join();
 
         // the detached client threads use the SSL context, so wait for them to drain before it is destroyed.
-        // each is bounded by the receive timeout, so this cannot wait indefinitely.
+        // each is bounded by the request and write deadlines, so this cannot wait indefinitely.
         for (int waited = 0; waited < DRAIN_TIMEOUT_MS; waited += DRAIN_POLL_MS) {
             {
                 std::lock_guard<std::mutex> lock(mSlotMutex);
@@ -525,7 +612,11 @@ namespace nethernet {
 
     void SignalingServer::_acceptLoop() {
         while (mRunning.load()) {
-            const FalconSignalingSocket client = accept((FalconSignalingSocket) mListener, nullptr, nullptr);
+            sockaddr_storage peer;
+            socklen_t peerLength = sizeof(peer);
+            memset(&peer, 0, sizeof(peer));
+            const FalconSignalingSocket client = accept((FalconSignalingSocket) mListener, (sockaddr *) &peer,
+                                                        &peerLength);
 
             if (client == FALCON_SIGNALING_INVALID_SOCKET) {
                 if (!mRunning.load())
@@ -536,15 +627,22 @@ namespace nethernet {
 
             // one stalled client must not block the others, so each is served on its own detached thread. a cap
             // keeps a flood of slow clients from spawning unbounded threads; past it the connection is refused.
-            if (!_waitForSlot()) {
+            const std::string address = peerAddress(peer);
+            if (!_claimAddress(address)) {
                 _rejectBusy((long long) client);
                 continue;
             }
 
-            std::thread([this, client]() {
+            if (!_waitForSlot()) {
+                _releaseAddress(address);
+                _rejectBusy((long long) client);
+                continue;
+            }
+
+            std::thread([this, client, address]() {
                 _handleClient((long long) client);
                 FALCON_SIGNALING_CLOSE_SOCKET(client);
-                _releaseSlot();
+                _releaseSlot(address);
             }).detach();
         }
     }
@@ -562,9 +660,33 @@ namespace nethernet {
         return true;
     }
 
-    // notified under the lock: stop() may destroy the server as soon as the count reads zero
-    void SignalingServer::_releaseSlot() {
+    // counted apart from the global slots: one address cannot take the room every other player needs
+    bool SignalingServer::_claimAddress(const std::string &address) {
         std::lock_guard<std::mutex> lock(mSlotMutex);
+        int &count = mClientsPerAddress[address];
+        if (count >= MAX_CLIENTS_PER_ADDRESS)
+            return false;
+
+        ++count;
+        return true;
+    }
+
+    void SignalingServer::_releaseAddress(const std::string &address) {
+        std::lock_guard<std::mutex> lock(mSlotMutex);
+        _dropAddress(address);
+    }
+
+    // under mSlotMutex
+    void SignalingServer::_dropAddress(const std::string &address) {
+        const auto it = mClientsPerAddress.find(address);
+        if (it != mClientsPerAddress.end() && --it->second <= 0)
+            mClientsPerAddress.erase(it);
+    }
+
+    // notified under the lock: stop() may destroy the server as soon as the count reads zero
+    void SignalingServer::_releaseSlot(const std::string &address) {
+        std::lock_guard<std::mutex> lock(mSlotMutex);
+        _dropAddress(address);
         mActiveClients.fetch_sub(1);
         mSlotFreed.notify_one();
     }
@@ -578,6 +700,7 @@ namespace nethernet {
         Stream descriptor;
         descriptor.mDescriptor = socketDescriptor;
         descriptor.mSsl = nullptr;
+        descriptor.mDeadline = Clock::now();
         writeText(descriptor, 503, "Service Unavailable", "Too many pending joins, retry");
         shutdown(socketDescriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
         FALCON_SIGNALING_CLOSE_SOCKET(socketDescriptor);
@@ -589,15 +712,26 @@ namespace nethernet {
         Stream descriptor;
         descriptor.mDescriptor = socketDescriptor;
         descriptor.mSsl = nullptr;
+        // every read below polls against it: a request trickling in still ends here
+        descriptor.mDeadline = Clock::now() + std::chrono::milliseconds(REQUEST_DEADLINE_MS);
 
-        // Requests are served one at a time, so a client that never sends anything must not hold the loop.
-        setReceiveTimeout(socketDescriptor);
+        if (!setNonBlocking(socketDescriptor))
+            return;
+#ifdef SO_NOSIGPIPE
+        int noSignal = 1;
+        setsockopt(socketDescriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, sizeof(noSignal));
+#endif
         disableNagle(socketDescriptor);
 
         // https batch first, http only once every https probe ended: sub_143A92EB0; the first byte tells them apart
         char first = 0;
-        if (recv(socketDescriptor, &first, 1, MSG_PEEK) != 1)
-            return;
+        for (;;) {
+            const int peeked = (int) recv(socketDescriptor, &first, 1, MSG_PEEK);
+            if (peeked == 1)
+                break;
+            if (peeked == 0 || !wouldBlock() || !waitFor(socketDescriptor, false, descriptor.mDeadline))
+                return;
+        }
 
         const bool tls = (unsigned char) first == TLS_HANDSHAKE_RECORD;
         if (tls) {
@@ -611,7 +745,7 @@ namespace nethernet {
 
             SSL_set_fd(descriptor.mSsl, (int) socketDescriptor);
 
-            if (SSL_accept(descriptor.mSsl) != 1) {
+            if (!acceptTls(descriptor)) {
                 ERR_clear_error();
                 SSL_free(descriptor.mSsl);
                 return;
