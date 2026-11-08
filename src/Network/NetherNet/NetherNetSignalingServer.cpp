@@ -29,11 +29,13 @@ typedef SOCKET FalconSignalingSocket;
 #define FALCON_SIGNALING_INVALID_SOCKET INVALID_SOCKET
 #define FALCON_SIGNALING_CLOSE_SOCKET ::closesocket
 #define FALCON_SIGNALING_SHUTDOWN_BOTH SD_BOTH
+#define FALCON_SIGNALING_SHUTDOWN_WRITE SD_SEND
 #else
 typedef int FalconSignalingSocket;
 #define FALCON_SIGNALING_INVALID_SOCKET (-1)
 #define FALCON_SIGNALING_CLOSE_SOCKET ::close
 #define FALCON_SIGNALING_SHUTDOWN_BOTH SHUT_RDWR
+#define FALCON_SIGNALING_SHUTDOWN_WRITE SHUT_WR
 #endif
 
 namespace nethernet {
@@ -235,7 +237,7 @@ namespace nethernet {
         int reuse = 1;
         setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, (const char *) &reuse, sizeof(reuse));
 
-        if (bind(descriptor, result->ai_addr, (int) result->ai_addrlen) != 0 || listen(descriptor, 16) != 0) {
+        if (bind(descriptor, result->ai_addr, (int) result->ai_addrlen) != 0 || listen(descriptor, LISTEN_BACKLOG) != 0) {
             freeaddrinfo(result);
             FALCON_SIGNALING_CLOSE_SOCKET(descriptor);
             LOG_ERROR(LogAreaID::Network, "NetherNet signaling could not bind %s:%u", address.c_str(),
@@ -298,7 +300,7 @@ namespace nethernet {
             // one stalled client must not block the others, so each is served on its own detached thread. a cap
             // keeps a flood of slow clients from spawning unbounded threads; past it the connection is dropped.
             if (mActiveClients.load() >= MAX_CONCURRENT_CLIENTS) {
-                FALCON_SIGNALING_CLOSE_SOCKET(client);
+                _rejectBusy((long long) client);
                 continue;
             }
 
@@ -310,6 +312,32 @@ namespace nethernet {
                 mActiveClients.fetch_sub(1);
             }).detach();
         }
+    }
+
+    // a busy answer instead of a dropped socket: clients retry a 503, a reset reads as a failed join
+    void SignalingServer::_rejectBusy(long long handle) {
+        const FalconSignalingSocket socketDescriptor = (FalconSignalingSocket) handle;
+
+        // drain what already arrived: closing with unread bytes sends a reset that hides the answer
+        char discard[4096];
+#ifdef _WIN32
+        u_long nonBlocking = 1;
+        ioctlsocket(socketDescriptor, FIONBIO, &nonBlocking);
+        while (recv(socketDescriptor, discard, (int) sizeof(discard), 0) > 0) {
+        }
+        nonBlocking = 0;
+        ioctlsocket(socketDescriptor, FIONBIO, &nonBlocking);
+#else
+        while (recv(socketDescriptor, discard, sizeof(discard), MSG_DONTWAIT) > 0) {
+        }
+#endif
+
+        Stream descriptor;
+        descriptor.mDescriptor = socketDescriptor;
+        descriptor.mSsl = nullptr;
+        writeText(descriptor, 503, "Service Unavailable", "Too many pending joins, retry");
+        shutdown(socketDescriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
+        FALCON_SIGNALING_CLOSE_SOCKET(socketDescriptor);
     }
 
     void SignalingServer::_handleClient(long long handle) {
