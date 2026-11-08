@@ -14,11 +14,17 @@ public:
     explicit SharedPacket(const std::string &packet);
 
     // varint length then the packet: the batch payload before compression
-    const std::string &getBatch() const { return mBatch; }
+    const std::string &getBatch() const {
+        return mBatch;
+    }
 
-    size_t getPacketSize() const { return mPacketSize; }
+    size_t getPacketSize() const {
+        return mPacketSize;
+    }
 
-    std::string getPacket() const { return mBatch.substr(mBatch.size() - mPacketSize); }
+    std::string getPacket() const {
+        return mBatch.substr(mBatch.size() - mPacketSize);
+    }
 
     // empty when the algorithm leaves the batch uncompressed or compression failed; thread safe
     const std::string &getCompressed(CompressedNetworkPeer::CompressionAlgorithm algorithm) const;

@@ -33,9 +33,13 @@ namespace {
             return DataStatus::HasData;
         }
 
-        NetworkStatus getNetworkStatus() const override { return NetworkStatus(); }
+        NetworkStatus getNetworkStatus() const override {
+            return NetworkStatus();
+        }
 
-        bool usesGamePacketId() const override { return mGamePacketId; }
+        bool usesGamePacketId() const override {
+            return mGamePacketId;
+        }
 
         std::deque<std::string> mSent;
 
