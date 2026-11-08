@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+class SharedPacket;
+
 class NetworkPeer {
 public:
     enum class DataStatus : int {
@@ -39,6 +41,9 @@ public:
     virtual void update() {}
 
     virtual void flush() {}
+
+    // a batch holding only this packet; a compressing peer reuses its shared compressed form
+    virtual void sendSharedBatch(const SharedPacket &packet, Reliability reliability);
 
     virtual bool usesGamePacketId() const { return true; }
 

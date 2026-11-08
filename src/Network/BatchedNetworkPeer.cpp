@@ -1,5 +1,7 @@
 #include "Network/BatchedNetworkPeer.h"
 
+#include "Network/SharedPacket.h"
+
 #include "Core/Utility/BinaryStream.h"
 #include "Core/Utility/ReadOnlyBinaryStream.h"
 
@@ -28,6 +30,14 @@ void BatchedNetworkPeer::sendPacket(const std::string &data, Reliability reliabi
 
     if (mBatchBuffer.size() >= MAX_BATCH_SIZE)
         flush();
+}
+
+void BatchedNetworkPeer::sendShared(const SharedPacket &packet, Reliability reliability) {
+    if (packet.getPacketSize() == 0)
+        return;
+
+    _sendBatch();
+    mPeer->sendSharedBatch(packet, reliability);
 }
 
 void BatchedNetworkPeer::flush() {
