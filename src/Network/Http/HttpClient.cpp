@@ -355,7 +355,8 @@ std::string HttpClient::encodeForm(const Headers &fields) {
 
 bool HttpClient::request(const std::string &method, const std::string &url, const Headers &headers,
                          const std::string &body, HttpResponse &outResponse, std::string &outError,
-                         int timeoutMs, size_t maxResponseSize, const std::atomic<bool> *cancel, const std::function<void(size_t)> &progress) {
+                         int timeoutMs, size_t maxResponseSize, const std::atomic<bool> *cancel, const std::function<void(size_t)> &progress,
+                         const std::string &extraRootsFile) {
     outResponse = {};
     outError.clear();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -424,6 +425,14 @@ bool HttpClient::request(const std::string &method, const std::string &url, cons
         SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
         SSL_CTX_set_verify(context, SSL_VERIFY_PEER, nullptr);
         TlsRoots::load(context);
+        // a private CA beside the system roots: a test ACME server
+        if (!extraRootsFile.empty() && SSL_CTX_load_verify_locations(context, extraRootsFile.c_str(), nullptr) != 1) {
+            ERR_clear_error();
+            SSL_CTX_free(context);
+            HTTP_SOCKET_CLOSE(descriptor);
+            outError = "could not read the trusted roots " + extraRootsFile;
+            return false;
+        }
 
         ssl = SSL_new(context);
         if (ssl == nullptr) {

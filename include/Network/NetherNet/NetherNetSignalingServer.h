@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <string>
 #include <thread>
 #include <mutex>
@@ -10,6 +11,11 @@
 #include <vector>
 
 typedef struct ssl_ctx_st SSL_CTX;
+typedef struct ssl_st SSL;
+
+namespace acme {
+    class ChallengeStore;
+}
 
 namespace nethernet {
     class SignalingServer {
@@ -31,11 +37,21 @@ namespace nethernet {
 
         bool isRunning() const { return mRunning.load(); }
 
-        bool isSecure() const { return mSslContext != nullptr; }
+        bool isSecure() const {
+            return mSecure.load();
+        }
 
         unsigned short getBoundPort() const { return mBoundPort; }
 
         void setCertificate(const std::string &certificatePath, const std::string &privateKeyPath);
+
+        // swaps the certificate under running sessions: each keeps the context it started with
+        bool reloadCertificate(const std::string &certificatePath, const std::string &privateKeyPath);
+
+        // before start(): answers http-01 and tls-alpn-01 from the store
+        void setChallengeStore(const std::shared_ptr<acme::ChallengeStore> &store) {
+            mChallenges = store;
+        }
 
         void setStatusProvider(const StatusProvider &provider) {
             mStatusProvider = provider;
@@ -43,6 +59,15 @@ namespace nethernet {
 
     private:
         bool _createSslContext();
+
+        SSL_CTX *_buildSslContext(const std::string &certificatePath, const std::string &privateKeyPath);
+
+        SSL *_newSession();
+
+        static int _onClientHello(SSL *ssl, int *alert, void *argument);
+
+        static int _onSelectProtocol(SSL *ssl, const unsigned char **out, unsigned char *outLength,
+                                     const unsigned char *in, unsigned int inLength, void *argument);
 
         void _destroySslContext();
 
@@ -85,6 +110,9 @@ namespace nethernet {
         std::string mCertificatePath;
         std::string mPrivateKeyPath;
         SSL_CTX *mSslContext;
+        std::mutex mSslMutex;
+        std::atomic<bool> mSecure{false};
+        std::shared_ptr<acme::ChallengeStore> mChallenges;
         unsigned short mBoundPort;
     };
 }

@@ -24,7 +24,8 @@ public:
     static bool request(const std::string &method, const std::string &url, const Headers &headers,
                         const std::string &body, HttpResponse &outResponse, std::string &outError,
                         int timeoutMs = DEFAULT_TIMEOUT_MS, size_t maxResponseSize = 16 * 1024 * 1024,
-                        const std::atomic<bool> *cancel = nullptr, const std::function<void(size_t)> &progress = {});
+                        const std::atomic<bool> *cancel = nullptr, const std::function<void(size_t)> &progress = {},
+                        const std::string &extraRootsFile = std::string());
 
     static bool get(const std::string &url, const Headers &headers, HttpResponse &outResponse,
                     std::string &outError, int timeoutMs = DEFAULT_TIMEOUT_MS, size_t maxResponseSize = 16 * 1024 * 1024,
