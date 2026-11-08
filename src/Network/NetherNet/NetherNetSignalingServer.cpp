@@ -21,6 +21,8 @@
 
 #include <cctype>
 #include <chrono>
+#include <csignal>
+#include <mutex>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -119,6 +121,16 @@ namespace nethernet {
             send(descriptor, TLS_HANDSHAKE_FAILURE, (int) sizeof(TLS_HANDSHAKE_FAILURE), 0);
             shutdown(descriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
             drainUntilClosed(descriptor);
+        }
+
+        // a peer that closed while we answer must cost its socket, never the process
+        void ignoreBrokenPipes() {
+#ifndef _WIN32
+            static std::once_flag once;
+            std::call_once(once, []() {
+                std::signal(SIGPIPE, SIG_IGN);
+            });
+#endif
         }
 
         typedef SignalingServer::Stream Stream;
@@ -263,6 +275,7 @@ namespace nethernet {
         if (mRunning.load())
             return false;
 
+        ignoreBrokenPipes();
         _createSslContext();
 
         addrinfo hints;
