@@ -42,6 +42,19 @@ public:
 
     void setTlsCertificate(const std::string &certificatePath, const std::string &privateKeyPath);
 
+    // 0 keeps a single listener; the game port itself is never repeated here
+    void setExtraSignalingPort(unsigned short port) {
+        mExtraSignalingPort = port;
+    }
+
+    bool isSignalingSecure() const {
+        return mSignaling.isSecure();
+    }
+
+    unsigned short getExtraSignalingPort() const {
+        return mExtraSignaling.getBoundPort();
+    }
+
     void setServerDataProvider(const std::function<nethernet::ServerData()> &provider) {
         mServerDataProvider = provider;
     }
@@ -71,6 +84,8 @@ private:
     RakPeerHelper::IPSupportInterface &mIpSupport;
     ConnectionDefinition mConnectionDefinition;
     nethernet::SignalingServer mSignaling;
+    nethernet::SignalingServer mExtraSignaling;
+    unsigned short mExtraSignalingPort = 0;
     nethernet::DiscoveryListener mDiscovery;
     nethernet::Identity mIdentity;
     nethernet::Credentials mCredentials;

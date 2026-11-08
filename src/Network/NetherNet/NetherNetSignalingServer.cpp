@@ -7,6 +7,7 @@
 
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -55,6 +56,8 @@ namespace nethernet {
         // a join burst outlasts the cap by one negotiation round: wait that long before answering busy
         const int SLOT_WAIT_MS = 1500;
         const unsigned char TLS_HANDSHAKE_RECORD = 0x16;
+        // fatal handshake_failure alert record
+        const char TLS_HANDSHAKE_FAILURE[] = {0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28};
 
         void setReceiveTimeout(FalconSignalingSocket descriptor) {
 #ifdef _WIN32
@@ -65,6 +68,35 @@ namespace nethernet {
             timeout.tv_usec = 0;
 #endif
             setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout, sizeof(timeout));
+        }
+
+        // the probe answer and the TLS flights are small writes: Nagle against a delayed ack stalls each one
+        void disableNagle(FalconSignalingSocket descriptor) {
+            int enabled = 1;
+            setsockopt(descriptor, IPPROTO_TCP, TCP_NODELAY, (const char *) &enabled, sizeof(enabled));
+        }
+
+        // closing with unread bytes sends a reset that hides the answer or the alert
+        void drainPending(FalconSignalingSocket descriptor) {
+            char discard[4096];
+#ifdef _WIN32
+            u_long nonBlocking = 1;
+            ioctlsocket(descriptor, FIONBIO, &nonBlocking);
+            while (recv(descriptor, discard, (int) sizeof(discard), 0) > 0) {
+            }
+            nonBlocking = 0;
+            ioctlsocket(descriptor, FIONBIO, &nonBlocking);
+#else
+            while (recv(descriptor, discard, sizeof(discard), MSG_DONTWAIT) > 0) {
+            }
+#endif
+        }
+
+        // no certificate: fail the https probe at once so the game moves on to http on this port
+        void refuseTls(FalconSignalingSocket descriptor) {
+            drainPending(descriptor);
+            send(descriptor, TLS_HANDSHAKE_FAILURE, (int) sizeof(TLS_HANDSHAKE_FAILURE), 0);
+            shutdown(descriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
         }
 
         typedef SignalingServer::Stream Stream;
@@ -349,19 +381,7 @@ namespace nethernet {
     void SignalingServer::_rejectBusy(long long handle) {
         const FalconSignalingSocket socketDescriptor = (FalconSignalingSocket) handle;
 
-        // drain what already arrived: closing with unread bytes sends a reset that hides the answer
-        char discard[4096];
-#ifdef _WIN32
-        u_long nonBlocking = 1;
-        ioctlsocket(socketDescriptor, FIONBIO, &nonBlocking);
-        while (recv(socketDescriptor, discard, (int) sizeof(discard), 0) > 0) {
-        }
-        nonBlocking = 0;
-        ioctlsocket(socketDescriptor, FIONBIO, &nonBlocking);
-#else
-        while (recv(socketDescriptor, discard, sizeof(discard), MSG_DONTWAIT) > 0) {
-        }
-#endif
+        drainPending(socketDescriptor);
 
         Stream descriptor;
         descriptor.mDescriptor = socketDescriptor;
@@ -380,16 +400,18 @@ namespace nethernet {
 
         // Requests are served one at a time, so a client that never sends anything must not hold the loop.
         setReceiveTimeout(socketDescriptor);
+        disableNagle(socketDescriptor);
 
-        // The client opens with a TLS handshake and only retries in plaintext once that is refused, so
-        // the first byte tells the two apart. Without a certificate the handshake is closed right away.
+        // https batch first, http only once every https probe ended: sub_143A92EB0; the first byte tells them apart
         char first = 0;
         if (recv(socketDescriptor, &first, 1, MSG_PEEK) != 1)
             return;
 
         const bool tls = (unsigned char) first == TLS_HANDSHAKE_RECORD;
-        if (tls && mSslContext == nullptr)
+        if (tls && mSslContext == nullptr) {
+            refuseTls(socketDescriptor);
             return;
+        }
 
         if (tls) {
             descriptor.mSsl = SSL_new(mSslContext);
