@@ -45,7 +45,11 @@ namespace {
 
     TestSocket connectLocal(unsigned short port) {
         TestSocket descriptor = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+        require(descriptor != INVALID_SOCKET, "socket failed");
+#else
         require(descriptor >= 0, "socket failed");
+#endif
 
 #ifdef _WIN32
         const DWORD timeout = 5000;
@@ -124,9 +128,12 @@ namespace {
         X509_gmtime_adj(X509_getm_notBefore(certificate), 0);
         X509_gmtime_adj(X509_getm_notAfter(certificate), 3600);
         X509_set_pubkey(certificate, key);
-        X509_NAME *name = X509_get_subject_name(certificate);
+        // OpenSSL 4 hands out the subject read-only: build the name apart
+        X509_NAME *name = X509_NAME_new();
         X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (const unsigned char *) commonName.c_str(), -1, -1, 0);
+        X509_set_subject_name(certificate, name);
         X509_set_issuer_name(certificate, name);
+        X509_NAME_free(name);
         require(X509_sign(certificate, key, EVP_sha256()) > 0, "certificate signing failed");
 
         FILE *file = std::fopen(certificatePath.c_str(), "wb");

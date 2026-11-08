@@ -59,6 +59,8 @@ namespace nethernet {
         // a join burst outlasts the cap by one negotiation round: wait that long before answering busy
         const int SLOT_WAIT_MS = 1500;
         const unsigned char TLS_HANDSHAKE_RECORD = 0x16;
+        // the game closes as soon as it reads the alert: this only waits for a peer that does not
+        const int REFUSAL_DRAIN_MS = 500;
         // fatal handshake_failure alert record
         const char TLS_HANDSHAKE_FAILURE[] = {0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28};
 
@@ -95,11 +97,31 @@ namespace nethernet {
 #endif
         }
 
+        // a large ClientHello spans segments: one arriving after close turns it into a reset that drops the alert,
+        // so read until the peer closes, bounded by a short timeout
+        void drainUntilClosed(FalconSignalingSocket descriptor) {
+#ifdef _WIN32
+            const DWORD timeout = REFUSAL_DRAIN_MS;
+#else
+            timeval timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_usec = REFUSAL_DRAIN_MS * 1000;
+#endif
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, (const char *) &timeout, sizeof(timeout));
+
+            char discard[4096];
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(REFUSAL_DRAIN_MS);
+            while (std::chrono::steady_clock::now() < deadline
+                   && recv(descriptor, discard, (int) sizeof(discard), 0) > 0) {
+            }
+        }
+
         // no certificate: fail the https probe at once so the game moves on to http on this port
         void refuseTls(FalconSignalingSocket descriptor) {
             drainPending(descriptor);
             send(descriptor, TLS_HANDSHAKE_FAILURE, (int) sizeof(TLS_HANDSHAKE_FAILURE), 0);
             shutdown(descriptor, FALCON_SIGNALING_SHUTDOWN_WRITE);
+            drainUntilClosed(descriptor);
         }
 
         // ALPN wire form: length byte then name
