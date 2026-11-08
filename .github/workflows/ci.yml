@@ -60,14 +60,18 @@ jobs:
       - name: Configure and build (Linux)
         if: matrix.os == 'ubuntu-22.04'
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFALCON_NETWORK_BUILD_TESTS=ON
           cmake --build build --parallel
+
+      - name: Test (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        run: ctest --test-dir build --output-on-failure
 
       - name: Configure and build (Windows)
         if: matrix.os == 'windows-2022'
         shell: msys2 {0}
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFALCON_NETWORK_BUILD_TESTS=ON
           cmake --build build --parallel
 
   notify:

@@ -59,6 +59,7 @@ void NetherNetInstance::setCredentials(const nethernet::Credentials &credentials
 
 void NetherNetInstance::setTlsCertificate(const std::string &certificatePath, const std::string &privateKeyPath) {
     mSignaling.setCertificate(certificatePath, privateKeyPath);
+    mExtraSignaling.setCertificate(certificatePath, privateKeyPath);
 }
 
 bool NetherNetInstance::host(const ConnectionDefinition &definition) {
@@ -82,13 +83,23 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
                 return _negotiate(networkID, offer, answer, errorCode);
             };
 
-    mSignaling.setStatusProvider([this]() {
+    const nethernet::SignalingServer::StatusProvider status = [this]() {
         const nethernet::ServerData data = mServerDataProvider ? mServerDataProvider() : nethernet::ServerData();
         return data.toStatusJson();
-    });
+    };
+    mSignaling.setStatusProvider(status);
 
     if (!mSignaling.start(definition.mIPv4Address, definition.mPort, handler))
         return false;
+
+    // the game probes https://host and http://host beside the game port only when that port is 19132:
+    // sub_143A904D0; a refused extra port leaves the game port serving alone
+    if (mExtraSignalingPort != 0 && mExtraSignalingPort != mSignaling.getBoundPort()) {
+        mExtraSignaling.setStatusProvider(status);
+        if (!mExtraSignaling.start(definition.mIPv4Address, mExtraSignalingPort, handler))
+            LOG_WARN(LogAreaID::Network, "NetherNet signaling could not also listen on TCP %u",
+                     (unsigned) mExtraSignalingPort);
+    }
 
     unsigned char rawId[8];
     RAND_bytes(rawId, sizeof(rawId));
@@ -117,6 +128,7 @@ void NetherNetInstance::disconnect() {
     mIsHosting = false;
     _detachSignaling();
     mDiscovery.stop();
+    mExtraSignaling.stop();
     mSignaling.stop();
 
     std::vector<std::shared_ptr<nethernet::Connection>> connections;
