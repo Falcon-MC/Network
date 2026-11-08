@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <string>
 #include <thread>
@@ -51,6 +52,10 @@ namespace nethernet {
 
         void _acceptLoop();
 
+        bool _waitForSlot();
+
+        void _releaseSlot();
+
         void _rejectBusy(long long descriptor);
 
         void _handleClient(long long descriptor);
@@ -62,6 +67,8 @@ namespace nethernet {
         std::thread mThread;
         // one detached thread per client so a slow or stalled client cannot hold back everyone else's negotiation
         std::atomic<int> mActiveClients{0};
+        std::mutex mSlotMutex;
+        std::condition_variable mSlotFreed;
         std::atomic<bool> mRunning;
         long long mListener;
         std::string mCertificatePath;

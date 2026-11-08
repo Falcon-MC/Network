@@ -32,6 +32,10 @@ public:
 
     void flush() override;
 
+    void sendSharedBatch(const SharedPacket &packet, Reliability reliability) override;
+
+    static bool compress(CompressionAlgorithm algorithm, const std::string &input, std::string &outData);
+
 private:
     static bool _compressZlib(const std::string &input, std::string &outData);
 

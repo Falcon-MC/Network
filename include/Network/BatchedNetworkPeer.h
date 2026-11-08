@@ -21,6 +21,9 @@ public:
 
     void flush() override;
 
+    // after the pending batch: packet order holds across both paths
+    void sendShared(const SharedPacket &packet, Reliability reliability);
+
     bool hasFailed() const { return mFailed; }
 
 private:

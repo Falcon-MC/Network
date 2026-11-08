@@ -1,5 +1,7 @@
 #include "Network/CompressedNetworkPeer.h"
 
+#include "Network/SharedPacket.h"
+
 #include <snappy.h>
 #include <zlib.h>
 
@@ -94,6 +96,37 @@ bool CompressedNetworkPeer::_decompressSnappy(const char *data, size_t length, s
     if (!snappy::GetUncompressedLength(data, length, &uncompressed) || uncompressed > MAX_DECOMPRESSED_SIZE)
         return false;
     return snappy::Uncompress(data, length, &outData);
+}
+
+bool CompressedNetworkPeer::compress(CompressionAlgorithm algorithm, const std::string &input, std::string &outData) {
+    if (algorithm == CompressionAlgorithm::ZLib)
+        return _compressZlib(input, outData);
+    if (algorithm == CompressionAlgorithm::Snappy)
+        return _compressSnappy(input, outData);
+    return false;
+}
+
+void CompressedNetworkPeer::sendSharedBatch(const SharedPacket &packet, Reliability reliability) {
+    const std::string &batch = packet.getBatch();
+    // same choice as sendPacket: below the threshold the batch goes out raw
+    if (!mCompressionEnabled || batch.size() < mCompressionThreshold) {
+        sendPacket(batch, reliability, Compressibility::Compressible);
+        return;
+    }
+
+    const std::string &compressed = packet.getCompressed(mAlgorithm);
+    if (compressed.empty()) {
+        sendPacket(batch, reliability, Compressibility::Compressible);
+        return;
+    }
+
+    std::string payload;
+    payload.reserve(compressed.size() + 2);
+    if (mPeer->usesGamePacketId())
+        payload.push_back((char) GAME_PACKET_ID);
+    payload.push_back((char) mAlgorithm);
+    payload.append(compressed);
+    mPeer->sendPacket(payload, reliability, Compressibility::Compressible);
 }
 
 void CompressedNetworkPeer::sendPacket(const std::string &data, Reliability reliability,
