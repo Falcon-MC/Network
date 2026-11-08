@@ -46,7 +46,12 @@ namespace nethernet {
 
         static const int MAX_CONCURRENT_CLIENTS = 64;
 
+        // a burst of joins queues in the kernel instead of being refused
+        static const int LISTEN_BACKLOG = 128;
+
         void _acceptLoop();
+
+        void _rejectBusy(long long descriptor);
 
         void _handleClient(long long descriptor);
 
