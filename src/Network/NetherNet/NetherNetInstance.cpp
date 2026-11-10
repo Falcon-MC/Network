@@ -394,6 +394,7 @@ bool NetherNetInstance::_negotiate(const std::string &networkID, const std::stri
             std::make_shared<nethernet::Connection>(id, peerConnection);
 
     connection->setRemoteFingerprint(remoteFingerprints.front().mValue);
+    connection->setRemoteOffer(offer);
 
     std::weak_ptr<nethernet::Connection> weak = connection;
 
@@ -624,7 +625,7 @@ void NetherNetInstance::runEvents() {
         }
 
         if (mConnectionObserver && !mUnofficialClientsAllowed)
-            mConnectionObserver(connection->getRemoteFingerprint(), id);
+            mConnectionObserver(*connection);
 
         if (mCallbacks != nullptr && !mCallbacks->onValidateIncomingConnection(id)) {
             connection->close();

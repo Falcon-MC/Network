@@ -47,6 +47,11 @@ namespace nethernet {
 
         void setRemoteFingerprint(const std::string &fingerprint) { mRemoteFingerprint = fingerprint; }
 
+        // the offer the peer made, as it was received
+        const std::string &getRemoteOffer() const { return mRemoteOffer; }
+
+        void setRemoteOffer(const std::string &offer) { mRemoteOffer = offer; }
+
         bool attachChannel(const std::shared_ptr<rtc::DataChannel> &channel);
 
         bool areChannelsReady() const;
@@ -71,6 +76,7 @@ namespace nethernet {
 
         NetworkIdentifier mId;
         std::string mRemoteFingerprint;
+        std::string mRemoteOffer;
         std::shared_ptr<rtc::PeerConnection> mPeerConnection;
 
         mutable std::mutex mMutex;
