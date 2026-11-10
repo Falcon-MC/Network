@@ -139,8 +139,8 @@ namespace RakNet {
         // what request 2 must echo: only a peer that received reply 1 at this address can
         uint32_t HandshakeCookie(const SystemAddress &systemAddress) const;
 
-        // connections from this address still in the handshake; remoteSystemMutex held
-        unsigned int HalfOpenConnectionsFrom(const SystemAddress &systemAddress) const;
+        // whether one more handshake from this address fits, per host and overall; remoteSystemMutex held
+        bool HasHalfOpenRoomFor(const SystemAddress &systemAddress) const;
 
         RakNetSocket2 socket;
         std::thread networkThread;

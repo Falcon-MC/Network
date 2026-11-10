@@ -119,15 +119,35 @@ namespace RakNet {
         return cookie;
     }
 
-    unsigned int RakPeer::HalfOpenConnectionsFrom(const SystemAddress &systemAddress) const {
-        const std::string host = systemAddress.ToString(false);
-        unsigned int count = 0;
-        for (auto &entry: remoteSystemList) {
-            if (entry.second->connectMode == IS_CONNECTING && !entry.second->weStartedTheConnection
-                && entry.second->systemAddress.ToString(false) == host)
-                count++;
+    namespace {
+        // what counts as one host: an IPv4 address, or an IPv6 /64, since a single machine owns all of it.
+        // a v4 address mapped into v6 (dual-stack socket) stays one IPv4 host
+        std::string HostKey(const SystemAddress &systemAddress) {
+            if (systemAddress.addr4.sin_family == AF_INET)
+                return std::string((const char *) &systemAddress.addr4.sin_addr, 4);
+
+            const unsigned char *bytes = (const unsigned char *) &systemAddress.addr6.sin6_addr;
+            if (IN6_IS_ADDR_V4MAPPED(&systemAddress.addr6.sin6_addr))
+                return std::string((const char *) bytes + 12, 4);
+            return std::string((const char *) bytes, 8);
         }
-        return count;
+    }
+
+    bool RakPeer::HasHalfOpenRoomFor(const SystemAddress &systemAddress) const {
+        // handshakes share the peer list with players: they may fill a quarter of it, never all
+        const unsigned int budget = maximumNumberOfPeers / 4 > MAX_HALF_OPEN_PER_ADDRESS
+                                    ? maximumNumberOfPeers / 4 : MAX_HALF_OPEN_PER_ADDRESS;
+        const std::string host = HostKey(systemAddress);
+        unsigned int fromHost = 0;
+        unsigned int total = 0;
+        for (auto &entry: remoteSystemList) {
+            if (entry.second->connectMode != IS_CONNECTING || entry.second->weStartedTheConnection)
+                continue;
+            total++;
+            if (HostKey(entry.second->systemAddress) == host)
+                fromHost++;
+        }
+        return fromHost < MAX_HALF_OPEN_PER_ADDRESS && total < budget;
     }
 
     RakPeer::~RakPeer() {
@@ -683,7 +703,7 @@ namespace RakNet {
                     remoteSystemList.erase(systemAddress);
 
                 if (NumberOfConnectionsUnlocked() >= maximumIncomingConnections
-                    || HalfOpenConnectionsFrom(systemAddress) >= MAX_HALF_OPEN_PER_ADDRESS) {
+                    || !HasHalfOpenRoomFor(systemAddress)) {
                     BitStream out;
                     out.Write((unsigned char) ID_NO_FREE_INCOMING_CONNECTIONS);
                     out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
