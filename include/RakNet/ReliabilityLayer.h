@@ -146,6 +146,8 @@ namespace RakNet {
 
         std::map<SplitPacketIdType, std::map<SplitPacketIndexType, InternalPacket *> > splitPacketChannelList;
         std::map<SplitPacketIdType, SplitPacketIndexType> splitPacketExpectedCount;
+        // bytes held by fragments of messages not complete yet
+        size_t splitPacketBufferedBytes = 0;
 
         std::map<uint32_t, InternalPacket *> orderingHeap[NUMBER_OF_ORDERED_STREAMS];
         OrderingIndexType orderedWriteIndex[NUMBER_OF_ORDERED_STREAMS];

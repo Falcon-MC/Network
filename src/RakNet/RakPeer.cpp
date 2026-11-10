@@ -2,6 +2,9 @@
 #include "RakNet/MessageIdentifiers.h"
 
 #include <chrono>
+#include <cstring>
+
+#include <openssl/evp.h>
 
 #include <cstdlib>
 #include <random>
@@ -85,9 +88,47 @@ namespace RakNet {
         delete instance;
     }
 
+    namespace {
+        // a slot is held on one small datagram: few per address, and not for long
+        const unsigned int MAX_HALF_OPEN_PER_ADDRESS = 8;
+        const TimeMS HALF_OPEN_TIMEOUT_MS = 5000;
+    }
+
     RakPeer::RakPeer()
             : endThreads(true), myGuid(GenerateGUID()), maximumNumberOfPeers(0),
-              maximumIncomingConnections(0), nextSystemIndex(0) {}
+              maximumIncomingConnections(0), nextSystemIndex(0) {
+        std::random_device device;
+        for (unsigned char &byte: cookieSecret)
+            byte = (unsigned char) device();
+    }
+
+    uint32_t RakPeer::HandshakeCookie(const SystemAddress &systemAddress) const {
+        const std::string address = systemAddress.ToString(true);
+
+        unsigned char digest[EVP_MAX_MD_SIZE];
+        unsigned int length = 0;
+        EVP_MD_CTX *context = EVP_MD_CTX_new();
+        uint32_t cookie = 0;
+        if (context != nullptr
+            && EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1
+            && EVP_DigestUpdate(context, cookieSecret, sizeof(cookieSecret)) == 1
+            && EVP_DigestUpdate(context, address.data(), address.size()) == 1
+            && EVP_DigestFinal_ex(context, digest, &length) == 1 && length >= sizeof(cookie))
+            std::memcpy(&cookie, digest, sizeof(cookie));
+        EVP_MD_CTX_free(context);
+        return cookie;
+    }
+
+    unsigned int RakPeer::HalfOpenConnectionsFrom(const SystemAddress &systemAddress) const {
+        const std::string host = systemAddress.ToString(false);
+        unsigned int count = 0;
+        for (auto &entry: remoteSystemList) {
+            if (entry.second->connectMode == IS_CONNECTING && !entry.second->weStartedTheConnection
+                && entry.second->systemAddress.ToString(false) == host)
+                count++;
+        }
+        return count;
+    }
 
     RakPeer::~RakPeer() {
         Shutdown(0);
@@ -589,7 +630,9 @@ namespace RakNet {
                 out.Write((unsigned char) ID_OPEN_CONNECTION_REPLY_1);
                 out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
                 out.Write(myGuid.g);
-                out.Write((unsigned char) 0);
+                // security flag set: the cookie follows, nothing is stored for this address yet
+                out.Write((unsigned char) 1);
+                out.Write(HandshakeCookie(systemAddress));
                 out.Write((uint16_t) mtuSize);
 
                 SendOfflineMessage(out, systemAddress);
@@ -605,6 +648,15 @@ namespace RakNet {
                 SystemAddress bindingAddress;
                 uint16_t mtuSize;
                 uint64_t clientGuid;
+                uint32_t cookie;
+                unsigned char clientSecurity;
+
+                // cookie, then the client's own security byte: a forged source never saw reply 1,
+                // so it cannot claim a slot
+                if (!in.Read(cookie) || !in.Read(clientSecurity))
+                    return false;
+                if (cookie != HandshakeCookie(systemAddress))
+                    return true;
 
                 if (!in.Read(bindingAddress) || !in.Read(mtuSize) || !in.Read(clientGuid))
                     return false;
@@ -630,7 +682,8 @@ namespace RakNet {
                 if (remoteSystem)
                     remoteSystemList.erase(systemAddress);
 
-                if (NumberOfConnectionsUnlocked() >= maximumIncomingConnections) {
+                if (NumberOfConnectionsUnlocked() >= maximumIncomingConnections
+                    || HalfOpenConnectionsFrom(systemAddress) >= MAX_HALF_OPEN_PER_ADDRESS) {
                     BitStream out;
                     out.Write((unsigned char) ID_NO_FREE_INCOMING_CONNECTIONS);
                     out.WriteAlignedBytes(OFFLINE_MESSAGE_DATA_ID, sizeof(OFFLINE_MESSAGE_DATA_ID));
@@ -1011,7 +1064,12 @@ namespace RakNet {
                                                       time);
 
 
-                if (remoteSystem->reliabilityLayer.IsDeadConnection()) {
+                // a handshake that stalls gives its slot back long before the idle timeout would
+                const bool stalled = remoteSystem->connectMode == IS_CONNECTING
+                                     && !remoteSystem->weStartedTheConnection
+                                     && time - remoteSystem->connectionTime > HALF_OPEN_TIMEOUT_MS;
+
+                if (stalled || remoteSystem->reliabilityLayer.IsDeadConnection()) {
                     if (remoteSystem->connectMode == IS_CONNECTED) {
                         Packet *packet = AllocPacket(1, remoteSystem->systemAddress, remoteSystem->guid);
                         packet->data[0] = ID_CONNECTION_LOST;
