@@ -300,6 +300,14 @@ void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const 
 
 bool NetherNetInstance::_negotiate(const std::string &networkID, const std::string &offer, std::string &answer,
                                    int &errorCode, const std::string &signalKey) {
+    const int offerCheck = mUnofficialClientsAllowed ? 0 : nethernet::Description::inspectOffer(offer);
+    if (offerCheck != 0) {
+        LOG_WARN(LogAreaID::Network, "NetherNet offer from %s rejected: client check %d", networkID.c_str(),
+                 offerCheck);
+        errorCode = nethernet::ErrorCodeFailedToSetRemoteDescription;
+        return false;
+    }
+
     const std::vector<nethernet::Fingerprint> remoteFingerprints = nethernet::Description::parseFingerprints(offer);
 
     if (remoteFingerprints.empty()) {

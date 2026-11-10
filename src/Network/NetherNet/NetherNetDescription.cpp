@@ -127,6 +127,43 @@ namespace nethernet {
                mIdpProtocol == "default" && !mIdpDomain.empty();
     }
 
+    int Description::inspectOffer(const std::string &sdp) {
+        // libwebrtc: ICE_UFRAG_LENGTH and ICE_PWD_LENGTH
+        static const size_t USERNAME_FRAGMENT_LENGTH = 4;
+        static const size_t PASSWORD_LENGTH = 24;
+
+        bool hasUsernameFragment = false;
+        bool hasPassword = false;
+
+        for (const std::string &line: splitLines(sdp)) {
+            if (line.rfind("a=ice-ufrag:", 0) == 0) {
+                hasUsernameFragment = true;
+                if (trim(line.substr(12)).size() != USERNAME_FRAGMENT_LENGTH)
+                    return 1;
+            } else if (line.rfind("a=ice-pwd:", 0) == 0) {
+                hasPassword = true;
+                if (trim(line.substr(10)).size() != PASSWORD_LENGTH)
+                    return 1;
+            } else if (line.rfind("a=candidate:", 0) == 0) {
+                // libwebrtc leaves the network id and cost out of a candidate when they are zero
+                std::string token;
+                std::string previous;
+                for (size_t index = 0; index <= line.size(); index++) {
+                    if (index < line.size() && line[index] != ' ') {
+                        token.push_back(line[index]);
+                        continue;
+                    }
+                    if (token == "0" && (previous == "network-id" || previous == "network-cost"))
+                        return 2;
+                    previous = token;
+                    token.clear();
+                }
+            }
+        }
+
+        return hasUsernameFragment && hasPassword ? 0 : 1;
+    }
+
     std::vector<Fingerprint> Description::parseFingerprints(const std::string &sdp) {
         std::vector<Fingerprint> sessionLevel;
         std::vector<Fingerprint> mediaLevel;

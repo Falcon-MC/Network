@@ -34,6 +34,10 @@ namespace nethernet {
 
         static bool parseIdentity(const std::string &sdp, IdentityData &out, std::string &failure);
 
+        // zero when the offer is one the game could have written, else a number for the operator's
+        // log: what gave the client away is never named
+        static int inspectOffer(const std::string &sdp);
+
         static std::string generateFingerprintsPayload(const std::vector<Fingerprint> &fingerprints);
 
         static std::string encodeIdentity(const IdentityData &identity);
