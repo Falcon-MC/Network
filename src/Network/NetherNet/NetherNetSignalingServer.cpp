@@ -59,6 +59,19 @@ namespace nethernet {
 
     namespace {
 
+        thread_local std::string gRequestHeaders;
+
+        // clears the headers of the request when its handling ends, whichever way it ends
+        struct RequestHeadersScope {
+            explicit RequestHeadersScope(const std::string &headers) {
+                gRequestHeaders = headers;
+            }
+
+            ~RequestHeadersScope() {
+                gRequestHeaders.clear();
+            }
+        };
+
         const size_t MAX_SDP_BODY_SIZE = 1 << 20;
         const size_t MAX_HEADER_SIZE = 16 * 1024;
         // the game's own probe gives up after 3 s: sub_143A92EB0
@@ -771,6 +784,10 @@ namespace nethernet {
         }
     }
 
+    const std::string &SignalingServer::currentRequestHeaders() {
+        return gRequestHeaders;
+    }
+
     void SignalingServer::_serveRequest(const Stream &descriptor) {
         std::string buffer;
         char chunk[4096];
@@ -882,6 +899,7 @@ namespace nethernet {
 
         std::string answer;
         int errorCode = 0;
+        const RequestHeadersScope requestHeaders(headers);
 
         if (mHandler == nullptr || !mHandler(networkID, body, answer, errorCode)) {
             if (errorCode != 0) {

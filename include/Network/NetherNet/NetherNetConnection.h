@@ -52,6 +52,11 @@ namespace nethernet {
 
         void setRemoteOffer(const std::string &offer) { mRemoteOffer = offer; }
 
+        // the request line and headers the offer came with, empty when it did not come over HTTP
+        const std::string &getRemoteRequest() const { return mRemoteRequest; }
+
+        void setRemoteRequest(const std::string &request) { mRemoteRequest = request; }
+
         bool attachChannel(const std::shared_ptr<rtc::DataChannel> &channel);
 
         bool areChannelsReady() const;
@@ -77,6 +82,7 @@ namespace nethernet {
         NetworkIdentifier mId;
         std::string mRemoteFingerprint;
         std::string mRemoteOffer;
+        std::string mRemoteRequest;
         std::shared_ptr<rtc::PeerConnection> mPeerConnection;
 
         mutable std::mutex mMutex;

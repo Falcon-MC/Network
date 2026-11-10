@@ -37,6 +37,10 @@ namespace nethernet {
 
         bool isRunning() const { return mRunning.load(); }
 
+        // the request line and headers of the join request being handled on this thread, empty outside
+        // of an offer handler: an offer that came another way has none
+        static const std::string &currentRequestHeaders();
+
         bool isSecure() const {
             return mSecure.load();
         }
