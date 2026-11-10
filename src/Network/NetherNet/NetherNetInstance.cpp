@@ -405,6 +405,7 @@ bool NetherNetInstance::_negotiateOffer(const std::string &networkID, const std:
 
     connection->setRemoteFingerprint(remoteFingerprints.front().mValue);
     connection->setRemoteOffer(offer);
+    connection->setRemoteRequest(nethernet::SignalingServer::currentRequestHeaders());
 
     std::weak_ptr<nethernet::Connection> weak = connection;
 
