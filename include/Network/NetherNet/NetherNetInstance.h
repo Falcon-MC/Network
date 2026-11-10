@@ -10,6 +10,7 @@
 #include "Network/NetherNet/NetherNetSignalingServer.h"
 #include "Network/RakPeerHelper.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -46,6 +47,12 @@ public:
     // 0 keeps a single listener; the game port itself is never repeated here
     void setExtraSignalingPort(unsigned short port) {
         mExtraSignalingPort = port;
+    }
+
+    // offers the game could not have written are refused unless this is on: an owner's own proxy or
+    // test client writes them too
+    void setUnofficialClientsAllowed(bool allowed) {
+        mUnofficialClientsAllowed = allowed;
     }
 
     // before host(): issues and renews the signaling certificate on its own thread
@@ -97,6 +104,7 @@ private:
     nethernet::SignalingServer mSignaling;
     nethernet::SignalingServer mExtraSignaling;
     unsigned short mExtraSignalingPort = 0;
+    std::atomic<bool> mUnofficialClientsAllowed{false};
     acme::ManagerSettings mAcmeSettings;
     bool mAcmeEnabled = false;
     std::shared_ptr<acme::ChallengeStore> mAcmeChallenges;
