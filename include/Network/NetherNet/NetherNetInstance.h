@@ -55,6 +55,12 @@ public:
         mUnofficialClientsAllowed = allowed;
     }
 
+    // asked once a connection's channels are open, with the peer's certificate fingerprint: above zero
+    // the connection is closed, below zero it is only noted. Never asked when unofficial clients are allowed
+    void setConnectionInspector(std::function<int(const std::string &)> inspector) {
+        mConnectionInspector = std::move(inspector);
+    }
+
     // before host(): issues and renews the signaling certificate on its own thread
     void enableAcme(const acme::ManagerSettings &settings) {
         mAcmeSettings = settings;
@@ -113,6 +119,7 @@ private:
     nethernet::Identity mIdentity;
     nethernet::Credentials mCredentials;
     std::function<nethernet::ServerData()> mServerDataProvider;
+    std::function<int(const std::string &)> mConnectionInspector;
     uint64_t mNetworkId = 0;
 
     std::mutex mMutex;

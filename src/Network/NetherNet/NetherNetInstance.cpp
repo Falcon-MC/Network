@@ -393,6 +393,8 @@ bool NetherNetInstance::_negotiate(const std::string &networkID, const std::stri
     const std::shared_ptr<nethernet::Connection> connection =
             std::make_shared<nethernet::Connection>(id, peerConnection);
 
+    connection->setRemoteFingerprint(remoteFingerprints.front().mValue);
+
     std::weak_ptr<nethernet::Connection> weak = connection;
 
     peerConnection->onDataChannel([weak](std::shared_ptr<rtc::DataChannel> channel) {
@@ -607,6 +609,19 @@ void NetherNetInstance::runEvents() {
 
     for (const std::shared_ptr<nethernet::Connection> &connection: ready) {
         const NetworkIdentifier &id = connection->getNetworkIdentifier();
+
+        if (mConnectionInspector && !mUnofficialClientsAllowed) {
+            const int check = mConnectionInspector(connection->getRemoteFingerprint());
+            if (check > 0) {
+                LOG_WARN(LogAreaID::Network, "NetherNet connection %s closed: client check %d",
+                         id.getAddress().c_str(), check);
+                connection->close();
+                continue;
+            }
+            if (check < 0)
+                LOG_INFO(LogAreaID::Network, "NetherNet connection %s: client note %d", id.getAddress().c_str(),
+                         -check);
+        }
 
         if (mCallbacks != nullptr && !mCallbacks->onValidateIncomingConnection(id)) {
             connection->close();
