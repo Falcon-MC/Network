@@ -61,6 +61,12 @@ public:
         mConnectionInspector = std::move(inspector);
     }
 
+    // told why an offer was turned down: the error answered to the peer, and the client check that
+    // refused it when one did, zero otherwise
+    void setNegotiationFailureObserver(std::function<void(int, int)> observer) {
+        mNegotiationFailureObserver = std::move(observer);
+    }
+
     // told of each connection once its channels are open, for a host that decides later. Never told when
     // unofficial clients are allowed
     void setConnectionObserver(std::function<void(const nethernet::Connection &)> observer) {
@@ -101,6 +107,9 @@ private:
     bool _negotiate(const std::string &networkID, const std::string &offer, std::string &answer, int &errorCode,
                     const std::string &signalKey = std::string());
 
+    bool _negotiateOffer(const std::string &networkID, const std::string &offer, std::string &answer, int &errorCode,
+                         const std::string &signalKey, int &clientCheck);
+
     void _onSignal(const nethernet::Signal &signal);
 
     void _answerOffer(nethernet::Signal offer);
@@ -127,6 +136,7 @@ private:
     std::function<nethernet::ServerData()> mServerDataProvider;
     std::function<int(const std::string &)> mConnectionInspector;
     std::function<void(const nethernet::Connection &)> mConnectionObserver;
+    std::function<void(int, int)> mNegotiationFailureObserver;
     uint64_t mNetworkId = 0;
 
     std::mutex mMutex;

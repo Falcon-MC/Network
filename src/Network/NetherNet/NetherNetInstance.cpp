@@ -300,11 +300,21 @@ void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const 
 
 bool NetherNetInstance::_negotiate(const std::string &networkID, const std::string &offer, std::string &answer,
                                    int &errorCode, const std::string &signalKey) {
+    int clientCheck = 0;
+    const bool accepted = _negotiateOffer(networkID, offer, answer, errorCode, signalKey, clientCheck);
+    if (!accepted && mNegotiationFailureObserver)
+        mNegotiationFailureObserver(errorCode, clientCheck);
+    return accepted;
+}
+
+bool NetherNetInstance::_negotiateOffer(const std::string &networkID, const std::string &offer, std::string &answer,
+                                        int &errorCode, const std::string &signalKey, int &clientCheck) {
     const int offerCheck = mUnofficialClientsAllowed ? 0 : nethernet::Description::inspectOffer(offer);
     if (offerCheck != 0) {
         LOG_WARN(LogAreaID::Network, "NetherNet offer from %s rejected: client check %d", networkID.c_str(),
                  offerCheck);
         errorCode = nethernet::ErrorCodeFailedToSetRemoteDescription;
+        clientCheck = offerCheck;
         return false;
     }
 
