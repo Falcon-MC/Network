@@ -623,6 +623,9 @@ void NetherNetInstance::runEvents() {
                          -check);
         }
 
+        if (mConnectionObserver && !mUnofficialClientsAllowed)
+            mConnectionObserver(connection->getRemoteFingerprint(), id);
+
         if (mCallbacks != nullptr && !mCallbacks->onValidateIncomingConnection(id)) {
             connection->close();
             continue;
