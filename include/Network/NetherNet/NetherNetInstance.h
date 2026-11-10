@@ -61,10 +61,9 @@ public:
         mConnectionInspector = std::move(inspector);
     }
 
-    // told of each connection once its channels are open, with the peer's certificate fingerprint and the
-    // identifier it is announced under, for a host that decides later. Never told when unofficial clients
-    // are allowed
-    void setConnectionObserver(std::function<void(const std::string &, const NetworkIdentifier &)> observer) {
+    // told of each connection once its channels are open, for a host that decides later. Never told when
+    // unofficial clients are allowed
+    void setConnectionObserver(std::function<void(const nethernet::Connection &)> observer) {
         mConnectionObserver = std::move(observer);
     }
 
@@ -127,7 +126,7 @@ private:
     nethernet::Credentials mCredentials;
     std::function<nethernet::ServerData()> mServerDataProvider;
     std::function<int(const std::string &)> mConnectionInspector;
-    std::function<void(const std::string &, const NetworkIdentifier &)> mConnectionObserver;
+    std::function<void(const nethernet::Connection &)> mConnectionObserver;
     uint64_t mNetworkId = 0;
 
     std::mutex mMutex;
