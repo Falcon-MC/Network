@@ -6,6 +6,9 @@
 namespace RakNet {
 
     static const unsigned int MAX_RECEIVED_HISTORY = 8192;
+    // a peer sends its large messages one after the other: nothing honest comes near these
+    static const size_t MAX_PENDING_SPLIT_MESSAGES = 16;
+    static const size_t MAX_PENDING_SPLIT_BYTES = 16 * 1024 * 1024;
 
     void DatagramHeaderFormat::Serialize(BitStream *out) const {
         if (isACK) {
@@ -180,6 +183,7 @@ namespace RakNet {
         }
         splitPacketChannelList.clear();
         splitPacketExpectedCount.clear();
+        splitPacketBufferedBytes = 0;
 
         for (int i = 0; i < NUMBER_OF_ORDERED_STREAMS; i++) {
             for (auto &entry: orderingHeap[i])
@@ -683,6 +687,17 @@ namespace RakNet {
 
         if (internalPacket->splitPacketCount > 0) {
             const SplitPacketIdType id = internalPacket->splitPacketId;
+            const size_t fragmentBytes = BITS_TO_BYTES(internalPacket->dataBitLength);
+
+            // fragments of messages that never complete are held forever: past the bounds the peer is
+            // dropped, not served
+            if ((splitPacketChannelList.find(id) == splitPacketChannelList.end()
+                 && splitPacketChannelList.size() >= MAX_PENDING_SPLIT_MESSAGES)
+                || splitPacketBufferedBytes + fragmentBytes > MAX_PENDING_SPLIT_BYTES) {
+                delete internalPacket;
+                deadConnection = true;
+                return;
+            }
 
             auto &channel = splitPacketChannelList[id];
             auto expectedIt = splitPacketExpectedCount.find(id);
@@ -700,6 +715,7 @@ namespace RakNet {
             }
 
             channel[internalPacket->splitPacketIndex] = internalPacket;
+            splitPacketBufferedBytes += fragmentBytes;
 
             if (channel.size() < internalPacket->splitPacketCount)
                 return;
@@ -793,6 +809,7 @@ namespace RakNet {
             totalBytes += BITS_TO_BYTES(entry.second->dataBitLength);
 
         merged->data.reserve(totalBytes);
+        splitPacketBufferedBytes -= totalBytes < splitPacketBufferedBytes ? totalBytes : splitPacketBufferedBytes;
 
         for (auto &entry: channel) {
             merged->data.insert(merged->data.end(), entry.second->data.begin(), entry.second->data.end());

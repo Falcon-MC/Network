@@ -136,6 +136,12 @@ namespace RakNet {
 
         static bool IsOfflineMessageMagic(const unsigned char *data, unsigned int length, unsigned int offset);
 
+        // what request 2 must echo: only a peer that received reply 1 at this address can
+        uint32_t HandshakeCookie(const SystemAddress &systemAddress) const;
+
+        // whether one more handshake from this address fits, per host and overall; remoteSystemMutex held
+        bool HasHalfOpenRoomFor(const SystemAddress &systemAddress) const;
+
         RakNetSocket2 socket;
         std::thread networkThread;
         std::atomic<bool> endThreads;
@@ -152,6 +158,7 @@ namespace RakNet {
         mutable std::mutex connectionAttemptMutex;
         std::vector<ConnectionAttempt> connectionAttempts;
 
+        unsigned char cookieSecret[32];
         RakNetGUID myGuid;
         unsigned int maximumNumberOfPeers;
         unsigned short maximumIncomingConnections;
