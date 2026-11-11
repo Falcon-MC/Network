@@ -51,6 +51,11 @@ public:
 
     // offers the game could not have written are refused unless this is on: an owner's own proxy or
     // test client writes them too
+    // LAN offers from private addresses may come without an identity assertion, as the game's LAN games do
+    void setAnonymousLanClientsAllowed(bool allowed) {
+        mAnonymousLanClientsAllowed = allowed;
+    }
+
     void setUnofficialClientsAllowed(bool allowed) {
         mUnofficialClientsAllowed = allowed;
     }
@@ -105,10 +110,10 @@ public:
 
 private:
     bool _negotiate(const std::string &networkID, const std::string &offer, std::string &answer, int &errorCode,
-                    const std::string &signalKey = std::string());
+                    const std::string &signalKey = std::string(), bool anonymousAllowed = false);
 
     bool _negotiateOffer(const std::string &networkID, const std::string &offer, std::string &answer, int &errorCode,
-                         const std::string &signalKey, int &clientCheck);
+                         const std::string &signalKey, int &clientCheck, bool anonymousAllowed);
 
     void _onSignal(const nethernet::Signal &signal);
 
@@ -126,6 +131,7 @@ private:
     nethernet::SignalingServer mExtraSignaling;
     unsigned short mExtraSignalingPort = 0;
     std::atomic<bool> mUnofficialClientsAllowed{false};
+    std::atomic<bool> mAnonymousLanClientsAllowed{false};
     acme::ManagerSettings mAcmeSettings;
     bool mAcmeEnabled = false;
     std::shared_ptr<acme::ChallengeStore> mAcmeChallenges;

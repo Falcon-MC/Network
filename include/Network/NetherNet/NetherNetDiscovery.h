@@ -49,8 +49,9 @@ namespace nethernet {
 
     class DiscoveryListener {
     public:
+        // localSender: the datagram came from a loopback or private address
         typedef std::function<bool(const std::string &networkID, const std::string &offer, std::string &answer,
-                                   int &errorCode)> OfferHandler;
+                                   int &errorCode, bool localSender)> OfferHandler;
         typedef std::function<ServerData()> ServerDataProvider;
 
         DiscoveryListener();
@@ -58,6 +59,8 @@ namespace nethernet {
         ~DiscoveryListener();
 
         bool start(uint64_t networkId, const ServerDataProvider &serverData, const OfferHandler &offerHandler);
+
+        static bool isLocalAddress(const void *from);
 
         void stop();
 

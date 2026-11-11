@@ -132,7 +132,14 @@ bool NetherNetInstance::host(const ConnectionDefinition &definition) {
                 return nethernet::ServerData();
             };
 
-    mDiscovery.start(mNetworkId, dataProvider, handler);
+    const nethernet::DiscoveryListener::OfferHandler lanHandler =
+            [this](const std::string &networkID, const std::string &offer, std::string &answer, int &errorCode,
+                   bool localSender) {
+                return _negotiate(networkID, offer, answer, errorCode, std::string(),
+                                  localSender && mAnonymousLanClientsAllowed);
+            };
+
+    mDiscovery.start(mNetworkId, dataProvider, lanHandler);
 
     mIsHosting = true;
     return true;
@@ -299,16 +306,18 @@ void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const 
 }
 
 bool NetherNetInstance::_negotiate(const std::string &networkID, const std::string &offer, std::string &answer,
-                                   int &errorCode, const std::string &signalKey) {
+                                   int &errorCode, const std::string &signalKey, bool anonymousAllowed) {
     int clientCheck = 0;
-    const bool accepted = _negotiateOffer(networkID, offer, answer, errorCode, signalKey, clientCheck);
+    const bool accepted = _negotiateOffer(networkID, offer, answer, errorCode, signalKey, clientCheck,
+                                          anonymousAllowed);
     if (!accepted && mNegotiationFailureObserver)
         mNegotiationFailureObserver(errorCode, clientCheck);
     return accepted;
 }
 
 bool NetherNetInstance::_negotiateOffer(const std::string &networkID, const std::string &offer, std::string &answer,
-                                        int &errorCode, const std::string &signalKey, int &clientCheck) {
+                                        int &errorCode, const std::string &signalKey, int &clientCheck,
+                                        bool anonymousAllowed) {
     const int offerCheck = mUnofficialClientsAllowed ? 0 : nethernet::Description::inspectOffer(offer);
     if (offerCheck != 0) {
         LOG_WARN(LogAreaID::Network, "NetherNet offer from %s rejected: client check %d", networkID.c_str(),
@@ -329,40 +338,44 @@ bool NetherNetInstance::_negotiateOffer(const std::string &networkID, const std:
     nethernet::IdentityData identity;
     std::string failure;
 
-    if (!nethernet::Description::parseIdentity(offer, identity, failure)) {
+    const bool asserted = nethernet::Description::parseIdentity(offer, identity, failure);
+    if (!asserted) {
         if (!failure.empty()) {
             LOG_WARN(LogAreaID::Network, "NetherNet identity assertion rejected: %s", failure.c_str());
             errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
             return false;
         }
 
-        LOG_WARN(LogAreaID::Network, "NetherNet offer carries no identity assertion, rejecting anonymous client");
-        errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
-        return false;
-    }
-
-    if (!identity.isValid()) {
+        if (!anonymousAllowed) {
+            LOG_WARN(LogAreaID::Network, "NetherNet offer carries no identity assertion, rejecting anonymous client");
+            errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
+            return false;
+        }
+    } else if (!identity.isValid()) {
         LOG_WARN(LogAreaID::Network, "NetherNet identity assertion is malformed");
         errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
         return false;
     }
 
-    EVP_PKEY *publicKey = nethernet::Identity::claimPublicKey(identity.mAssertionToken, failure);
-    if (publicKey == nullptr) {
-        LOG_WARN(LogAreaID::Network, "NetherNet client token rejected: %s", failure.c_str());
-        errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
-        return false;
-    }
+    // an assertion, when one is sent, is always checked
+    if (asserted) {
+        EVP_PKEY *publicKey = nethernet::Identity::claimPublicKey(identity.mAssertionToken, failure);
+        if (publicKey == nullptr) {
+            LOG_WARN(LogAreaID::Network, "NetherNet client token rejected: %s", failure.c_str());
+            errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
+            return false;
+        }
 
-    const std::string remotePayload = nethernet::Description::generateFingerprintsPayload(remoteFingerprints);
-    const bool verified = nethernet::Identity::verifyDetached(publicKey, identity.mAssertionFingerprints,
-                                                              remotePayload);
-    EVP_PKEY_free(publicKey);
+        const std::string remotePayload = nethernet::Description::generateFingerprintsPayload(remoteFingerprints);
+        const bool verified = nethernet::Identity::verifyDetached(publicKey, identity.mAssertionFingerprints,
+                                                                  remotePayload);
+        EVP_PKEY_free(publicKey);
 
-    if (!verified) {
-        LOG_WARN(LogAreaID::Network, "NetherNet fingerprints assertion could not be verified");
-        errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
-        return false;
+        if (!verified) {
+            LOG_WARN(LogAreaID::Network, "NetherNet fingerprints assertion could not be verified");
+            errorCode = nethernet::ErrorCodeIdentityVerificationFailed;
+            return false;
+        }
     }
 
     rtc::Configuration configuration;
