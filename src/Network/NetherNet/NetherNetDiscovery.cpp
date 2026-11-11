@@ -355,6 +355,25 @@ namespace nethernet {
         }
     }
 
+    // sub_14204D520: the game lists any sender, private or not; this only gates offers without an identity
+    bool DiscoveryListener::isLocalAddress(const void *from) {
+        const struct sockaddr *address = (const struct sockaddr *) from;
+        if (address->sa_family == AF_INET) {
+            const uint32_t ip = ntohl(((const struct sockaddr_in *) from)->sin_addr.s_addr);
+            return (ip >> 24) == 127 || (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8
+                   || (ip >> 16) == 0xA9FE;
+        }
+        if (address->sa_family == AF_INET6) {
+            const unsigned char *ip = ((const struct sockaddr_in6 *) from)->sin6_addr.s6_addr;
+            static const unsigned char loopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+            if (std::memcmp(ip, loopback, 16) == 0)
+                return true;
+            // unique local fc00::/7 and link local fe80::/10
+            return (ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80);
+        }
+        return false;
+    }
+
     void DiscoveryListener::_handleDatagram(const std::string &buffer, const void *from, unsigned int fromLength) {
         uint16_t packetId = 0;
         uint64_t senderId = 0;
@@ -391,7 +410,7 @@ namespace nethernet {
 
             std::string answer;
             int errorCode = 0;
-            if (!mOfferHandler(signal.mNetworkID, signal.mData, answer, errorCode))
+            if (!mOfferHandler(signal.mNetworkID, signal.mData, answer, errorCode, isLocalAddress(from)))
                 return;
 
             Signal response;
