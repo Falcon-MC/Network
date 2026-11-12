@@ -5,10 +5,66 @@
 #include <snappy.h>
 #include <zlib.h>
 
+#include <cstdint>
+
 namespace {
 
     const int RAW_DEFLATE_WINDOW_BITS = -15;
     const size_t MAX_DECOMPRESSED_SIZE = 8 * 1024 * 1024;
+
+    // sub_1404C8960: the game deflates a batch at level 7, raw, memory level 8, in one go
+    const int GAME_DEFLATE_LEVEL = 7;
+    const int GAME_MEMORY_LEVEL = 8;
+    // the first batches say enough, and a large one costs too much to deflate again
+    const unsigned short OBSERVED_BATCHES = 64;
+    const size_t MAX_COMPARED_SIZE = 256 * 1024;
+
+    bool deflateLikeGame(const char *data, size_t length, std::string &outData) {
+        z_stream stream{};
+        if (deflateInit2(&stream, GAME_DEFLATE_LEVEL, Z_DEFLATED, RAW_DEFLATE_WINDOW_BITS, GAME_MEMORY_LEVEL,
+                         Z_DEFAULT_STRATEGY)
+            != Z_OK)
+            return false;
+
+        outData.resize(deflateBound(&stream, (uLong) length));
+        stream.next_in = (Bytef *) data;
+        stream.avail_in = (uInt) length;
+        stream.next_out = (Bytef *) &outData[0];
+        stream.avail_out = (uInt) outData.size();
+        const int result = deflate(&stream, Z_FINISH);
+        const size_t written = outData.size() - stream.avail_out;
+        deflateEnd(&stream);
+        if (result != Z_STREAM_END)
+            return false;
+        outData.resize(written);
+        return true;
+    }
+
+    // a zlib that is not the reference one (a drop-in replacement) writes other bytes for the same input:
+    // comparing against it would say nothing
+    bool deflatesLikeReference() {
+        static const bool same = []() {
+            std::string input(20000, '\0');
+            static const char WORD[] = "minecraft:stone_bricks";
+            uint32_t state = 0x12345678;
+            for (size_t index = 0; index < input.size(); index++) {
+                state = state * 1664525u + 1013904223u;
+                input[index] = index % 97 < 60 ? WORD[index % 22] : (char) (state >> 24);
+            }
+
+            std::string output;
+            if (!deflateLikeGame(input.data(), input.size(), output) || output.size() != 8269)
+                return false;
+            uint32_t hash = 2166136261u;
+            for (const char byte: output) {
+                hash ^= (unsigned char) byte;
+                hash *= 16777619u;
+            }
+            // zlib 1.3.1, the version the game is built with
+            return hash == 0x55829a2c;
+        }();
+        return same;
+    }
 
 }
 
@@ -200,17 +256,41 @@ NetworkPeer::DataStatus CompressedNetworkPeer::receivePacket(std::string &outDat
         if (algorithm == CompressionAlgorithm::ZLib) {
             if (!_decompressZlib(body, bodyLength, outData))
                 continue;
+            _observe(algorithm, body, bodyLength, outData);
             return DataStatus::HasData;
         }
 
         if (algorithm == CompressionAlgorithm::Snappy) {
             if (!_decompressSnappy(body, bodyLength, outData))
                 continue;
+            _observe(algorithm, body, bodyLength, outData);
             return DataStatus::HasData;
         }
 
         continue;
     }
+}
+
+void CompressedNetworkPeer::_observe(CompressionAlgorithm algorithm, const char *body, size_t length,
+                                     const std::string &batch) {
+    if (mBatchTraits.mBatches >= OBSERVED_BATCHES)
+        return;
+    mBatchTraits.mBatches++;
+
+    // sub_1404C8960: a batch shorter than the threshold goes out as it is
+    if (batch.size() < mCompressionThreshold)
+        mBatchTraits.mCompressedBelowThreshold++;
+    if (algorithm != mAlgorithm)
+        mBatchTraits.mOtherAlgorithm++;
+
+    if (algorithm != CompressionAlgorithm::ZLib || batch.size() > MAX_COMPARED_SIZE || !deflatesLikeReference())
+        return;
+    std::string expected;
+    if (!deflateLikeGame(batch.data(), batch.size(), expected))
+        return;
+    mBatchTraits.mCompared++;
+    if (expected.size() != length || expected.compare(0, length, body, length) != 0)
+        mBatchTraits.mNotReproduced++;
 }
 
 NetworkPeer::NetworkStatus CompressedNetworkPeer::getNetworkStatus() const {
