@@ -57,6 +57,14 @@ namespace nethernet {
 
         void setRemoteRequest(const std::string &request) { mRemoteRequest = request; }
 
+        // the candidates the peer signalled after its offer, as received, a line each
+        std::string getRemoteCandidates() const;
+
+        void addRemoteCandidate(const std::string &candidate);
+
+        // the channels the peer opened, in the order it opened them: label, stream and protocol, a line each
+        std::string getRemoteChannels() const;
+
         bool attachChannel(const std::shared_ptr<rtc::DataChannel> &channel);
 
         bool areChannelsReady() const;
@@ -83,6 +91,8 @@ namespace nethernet {
         std::string mRemoteFingerprint;
         std::string mRemoteOffer;
         std::string mRemoteRequest;
+        std::string mRemoteCandidates;
+        std::string mRemoteChannels;
         std::shared_ptr<rtc::PeerConnection> mPeerConnection;
 
         mutable std::mutex mMutex;

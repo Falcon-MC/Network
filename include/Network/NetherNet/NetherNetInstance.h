@@ -151,6 +151,7 @@ private:
     std::shared_ptr<nethernet::Signaling> mOnlineSignaling;
     unsigned int mSignalSubscription = 0;
     std::unordered_map<std::string, std::weak_ptr<rtc::PeerConnection>> mNegotiating;
+    std::unordered_map<std::string, std::weak_ptr<nethernet::Connection>> mNegotiatingConnections;
     std::unordered_map<std::string, std::vector<std::string>> mBufferedCandidates;
     std::vector<std::thread> mNegotiationThreads;
 
