@@ -233,6 +233,7 @@ void NetherNetInstance::_detachSignaling() {
 
     std::lock_guard<std::mutex> lock(mMutex);
     mNegotiating.clear();
+    mNegotiatingConnections.clear();
     mBufferedCandidates.clear();
 }
 
@@ -286,6 +287,7 @@ void NetherNetInstance::_answerOffer(nethernet::Signal offer) {
 
 void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const std::string &candidate) {
     std::shared_ptr<rtc::PeerConnection> peerConnection;
+    std::shared_ptr<nethernet::Connection> connection;
 
     {
         std::lock_guard<std::mutex> lock(mMutex);
@@ -296,7 +298,13 @@ void NetherNetInstance::_addRemoteCandidate(const std::string &signalKey, const 
             mBufferedCandidates[signalKey].push_back(candidate);
             return;
         }
+
+        const auto owner = mNegotiatingConnections.find(signalKey);
+        connection = owner != mNegotiatingConnections.end() ? owner->second.lock() : nullptr;
     }
+
+    if (connection != nullptr)
+        connection->addRemoteCandidate(candidate);
 
     try {
         peerConnection->addRemoteCandidate(rtc::Candidate(nethernet::Description::stripCandidatePrefix(candidate), "0"));
@@ -467,6 +475,7 @@ bool NetherNetInstance::_negotiateOffer(const std::string &networkID, const std:
         {
             std::lock_guard<std::mutex> lock(mMutex);
             mNegotiating[signalKey] = peerConnection;
+            mNegotiatingConnections[signalKey] = connection;
             const auto it = mBufferedCandidates.find(signalKey);
             if (it != mBufferedCandidates.end()) {
                 buffered = std::move(it->second);
@@ -617,6 +626,13 @@ void NetherNetInstance::runEvents() {
         for (auto it = mNegotiating.begin(); it != mNegotiating.end();) {
             if (it->second.expired())
                 it = mNegotiating.erase(it);
+            else
+                ++it;
+        }
+
+        for (auto it = mNegotiatingConnections.begin(); it != mNegotiatingConnections.end();) {
+            if (it->second.expired())
+                it = mNegotiatingConnections.erase(it);
             else
                 ++it;
         }

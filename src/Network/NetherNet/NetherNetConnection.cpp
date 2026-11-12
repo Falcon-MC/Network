@@ -21,6 +21,10 @@ namespace nethernet {
          * is slowed down by the transport instead of filling memory.
          */
         const size_t MAX_INCOMING_PACKETS = 256;
+
+        // what is kept of a peer's signalling for whoever inspects the connection
+        const size_t MAX_REMOTE_CANDIDATES = 8 * 1024;
+        const size_t MAX_REMOTE_CHANNELS = 1024;
     }
 
     Connection::Connection(const NetworkIdentifier &id, std::shared_ptr<rtc::PeerConnection> peerConnection)
@@ -31,9 +35,36 @@ namespace nethernet {
         close();
     }
 
+    std::string Connection::getRemoteCandidates() const {
+        std::lock_guard<std::mutex> lock(mMutex);
+        return mRemoteCandidates;
+    }
+
+    void Connection::addRemoteCandidate(const std::string &candidate) {
+        std::lock_guard<std::mutex> lock(mMutex);
+        if (mRemoteCandidates.size() + candidate.size() + 1 > MAX_REMOTE_CANDIDATES)
+            return;
+        mRemoteCandidates += candidate;
+        mRemoteCandidates.push_back('\n');
+    }
+
+    std::string Connection::getRemoteChannels() const {
+        std::lock_guard<std::mutex> lock(mMutex);
+        return mRemoteChannels;
+    }
+
     bool Connection::attachChannel(const std::shared_ptr<rtc::DataChannel> &channel) {
         const std::string label = channel->label();
         const rtc::Reliability reliability = channel->reliability();
+
+        {
+            const std::optional<uint16_t> stream = channel->stream();
+            const std::string line = label + " " + (stream.has_value() ? std::to_string(stream.value()) : "-") + " "
+                                     + channel->protocol() + "\n";
+            std::lock_guard<std::mutex> lock(mMutex);
+            if (mRemoteChannels.size() + line.size() <= MAX_REMOTE_CHANNELS)
+                mRemoteChannels += line;
+        }
 
         ChannelReliability kind;
 
