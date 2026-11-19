@@ -17,7 +17,7 @@ NetworkIdentifier::NetworkIdentifier(const std::string &networkID, unsigned long
 
 std::string NetworkIdentifier::getAddress() const {
     if (mType == Type::NetherNet)
-        return mNetworkID;
+        return mRemoteAddress.empty() ? mNetworkID : mRemoteAddress;
 
     return mSystemAddress.ToString(false);
 }
@@ -33,8 +33,10 @@ size_t NetworkIdentifier::getHash() const {
 }
 
 std::string NetworkIdentifier::toString() const {
-    if (mType == Type::NetherNet)
-        return mNetworkID + " (" + std::to_string(mConnectionID) + ")";
+    if (mType == Type::NetherNet) {
+        const std::string name = mNetworkID + " (" + std::to_string(mConnectionID) + ")";
+        return mRemoteAddress.empty() ? name : mRemoteAddress + " " + name;
+    }
 
     return mSystemAddress.ToString() + " (" + mGuid.ToString() + ")";
 }
