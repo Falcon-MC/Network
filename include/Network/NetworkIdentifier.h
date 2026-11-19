@@ -38,7 +38,7 @@ public:
     std::string getAddress() const;
 
     // never part of the identity: two identifiers of one connection stay equal before and after
-    void setRemoteAddress(const std::string &address) { mRemoteAddress = address; }
+    void setRemoteAddress(const std::string &address);
 
     size_t getHash() const;
 

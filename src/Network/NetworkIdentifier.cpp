@@ -22,6 +22,10 @@ std::string NetworkIdentifier::getAddress() const {
     return mSystemAddress.ToString(false);
 }
 
+void NetworkIdentifier::setRemoteAddress(const std::string &address) {
+    mRemoteAddress = address;
+}
+
 size_t NetworkIdentifier::getHash() const {
     if (mType == Type::RakNet)
         return (size_t) mGuid.g;

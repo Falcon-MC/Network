@@ -39,8 +39,10 @@ int main() {
         endpointsGiveTheirHost();
         theAddressIsNotTheNetworkId();
     } catch (const std::exception &error) {
-        std::cerr << error.what() << std::endl;
+        std::cout << "FAIL: " << error.what() << std::endl;
         return 1;
     }
+
+    std::cout << "PASS: peer address" << std::endl;
     return 0;
 }
